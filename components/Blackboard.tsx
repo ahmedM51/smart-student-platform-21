@@ -58,6 +58,13 @@ export const Blackboard: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =>
   const currentPageRef = useRef(0);
   const pagesRef = useRef<string[]>(['']);
 
+  const captureSnapshot = (quality: number = 0.5) => {
+    if (!canvasRef.current) return '';
+    // JPEG is significantly smaller than PNG for photos / PDF renders.
+    // Smaller payloads are less likely to be dropped by realtime broadcast size limits.
+    return canvasRef.current.toDataURL('image/jpeg', quality);
+  };
+
   useEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
@@ -135,7 +142,7 @@ export const Blackboard: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =>
     }).on('broadcast', { event: 'sync-request' }, () => {
       // Someone joined, send them our current state
       if (canvasRef.current) {
-        const data = canvasRef.current.toDataURL('image/png', 0.3);
+        const data = captureSnapshot(0.4);
         channel.send({
           type: 'broadcast',
           event: 'draw',
@@ -212,7 +219,7 @@ export const Blackboard: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =>
           });
         } else if (canvasRef.current) {
           // Full sync (only on request or page change)
-          const data = canvasRef.current.toDataURL('image/png', 0.2); 
+          const data = captureSnapshot(0.35);
           channelRef.current.send({
             type: 'broadcast',
             event: 'draw',
@@ -313,7 +320,7 @@ export const Blackboard: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =>
   const saveCurrentState = () => {
     if (!canvasRef.current) return;
     const updatedPages = [...pages];
-    updatedPages[currentPage] = canvasRef.current.toDataURL('image/png', 1.0);
+    updatedPages[currentPage] = captureSnapshot(0.6);
     setPages(updatedPages);
     broadcastDraw();
     persistToCloud(updatedPages);
