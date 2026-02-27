@@ -1,9 +1,9 @@
 
 {
+  "devCommand": "npm run dev",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "routes": [
-    {
-      "handle": "filesystem"
-    },
     {
       "src": "/sitemap.xml",
       "dest": "/api/sitemap"
@@ -11,6 +11,9 @@
     {
       "src": "/robots.txt",
       "dest": "/api/robots"
+    },
+    {
+      "handle": "filesystem"
     },
     {
       "src": "/(.*)",
