@@ -1,17 +1,20 @@
 
 {
-  "rewrites": [
+  "routes": [
     {
-      "source": "/sitemap.xml",
-      "destination": "/api/sitemap"
+      "handle": "filesystem"
     },
     {
-      "source": "/robots.txt",
-      "destination": "/api/robots"
+      "src": "/sitemap.xml",
+      "dest": "/api/sitemap"
     },
     {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "src": "/robots.txt",
+      "dest": "/api/robots"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }
