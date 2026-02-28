@@ -1,23 +1,17 @@
-
 {
-  "devCommand": "npm run dev",
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "routes": [
+  "cleanUrls": true,
+  "rewrites": [
     {
-      "src": "/sitemap.xml",
-      "dest": "/api/sitemap"
+      "source": "/sitemap.xml",
+      "destination": "/sitemap.xml"
     },
     {
-      "src": "/robots.txt",
-      "dest": "/api/robots"
+      "source": "/robots.txt",
+      "destination": "/robots.txt"
     },
     {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
