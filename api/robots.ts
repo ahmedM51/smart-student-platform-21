@@ -1,11 +1,29 @@
-export default async function handler(req: any, res: any) {
-  const txt = `User-agent: *
+User-agent: *
 Allow: /
-
-Sitemap: https://smart-student-platform-21.vercel.app/sitemap.xml
-`;
-
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=86400');
-  res.status(200).send(txt);
-}
+Allow: /index.html
+Allow: /ai-assistant.html
+Allow: /subjects.html
+Allow: /planner.html
+Allow: /study-timer.html
+Allow: /js/
+Allow: /css/
+Allow: /images/
+# السماح بالزحف إلى auth.html لقراءة وسم noindex الموجود داخل الصفحة
+Allow: /auth.html
+Disallow: /uploads/
+Disallow: /logs/
+Disallow: /.env
+Disallow: /node_modules/
+Disallow: /server.js
+Disallow: /supabaseApi.js
+# السماح لمحركات البحث الرئيسية
+User-agent: Googlebot
+Allow: /
+User-agent: Bingbot
+Allow: /
+User-agent: Slurp
+Allow: /
+# موقع خريطة الموقع
+Sitemap: https://student-platform-frontend.vercel.app/sitemap.xml
+# معدل الزحف (اختياري)
+Crawl-delay: 1
