@@ -7,6 +7,7 @@ import {
   History, ArrowRight, Share2, Printer
 } from 'lucide-react';
 import { generateText, generateWithParts, textToSpeech } from '../services/geminiService';
+import { GoogleGenAI, Modality, LiveServerMessage } from '@google/genai';
 
 // --- Audio & File Helpers ---
 function encode(bytes: Uint8Array) {
@@ -88,10 +89,22 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const [isAudioSummaryLoading, setIsAudioSummaryLoading] = useState(false);
   const [summaryAudioUrl, setSummaryAudioUrl] = useState<string | null>(null);
 
+  const [liveApiKey, setLiveApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('gemini_live_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
+
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
@@ -109,6 +122,73 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     audioSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
   };
+
+  const stopLiveSession = async () => {
+    try {
+      stopAllAudio();
+    } catch {
+      // ignore
+    }
+
+    try {
+      processorRef.current?.disconnect();
+    } catch {
+      // ignore
+    }
+    processorRef.current = null;
+
+    try {
+      sourceNodeRef.current?.disconnect();
+    } catch {
+      // ignore
+    }
+    sourceNodeRef.current = null;
+
+    try {
+      inputAudioContextRef.current?.close();
+    } catch {
+      // ignore
+    }
+    inputAudioContextRef.current = null;
+
+    try {
+      audioContextRef.current?.close();
+    } catch {
+      // ignore
+    }
+    audioContextRef.current = null;
+
+    try {
+      mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+    } catch {
+      // ignore
+    }
+    mediaStreamRef.current = null;
+
+    try {
+      const session = await sessionRef.current;
+      if (session && typeof session.close === 'function') session.close();
+    } catch {
+      // ignore
+    }
+    sessionRef.current = null;
+
+    setIsLive(false);
+  };
+
+  function getUserTranscriptText(msg: LiveServerMessage): string | undefined {
+    const anyMsg: any = msg as any;
+    const text = anyMsg?.serverContent?.inputTranscription?.text;
+    return typeof text === 'string' ? text : undefined;
+  }
+
+  function getAiTranscriptText(msg: LiveServerMessage): string | undefined {
+    const anyMsg: any = msg as any;
+    const parts = anyMsg?.serverContent?.modelTurn?.parts;
+    if (!Array.isArray(parts)) return undefined;
+    const textPart = parts.find((p: any) => typeof p?.text === 'string');
+    return typeof textPart?.text === 'string' ? textPart.text : undefined;
+  }
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -262,14 +342,141 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 
   const startLiveSession = async () => {
     if (isLive) {
-      setIsLive(false);
-      stopAllAudio();
+      await stopLiveSession();
       return;
     }
 
-    alert(lang === 'ar'
-      ? 'جلسات الصوت المباشر تحتاج WebSocket backend (غير مدعومة على Vercel Serverless).'
-      : 'Live audio requires a WebSocket backend (not supported on Vercel Serverless).');
+    if (!liveApiKey.trim()) {
+      alert(lang === 'ar' ? 'يرجى إدخال مفتاح Gemini Live أولاً.' : 'Please enter a Gemini Live API key first.');
+      return;
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: liveApiKey.trim() });
+
+      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      inputAudioContextRef.current = inputCtx;
+      audioContextRef.current = outputCtx;
+      nextStartTimeRef.current = 0;
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      const sessionPromise = ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        callbacks: {
+          onopen: () => {
+            setIsLive(true);
+
+            const source = inputCtx.createMediaStreamSource(stream);
+            const proc = inputCtx.createScriptProcessor(4096, 1, 1);
+            sourceNodeRef.current = source;
+            processorRef.current = proc;
+
+            proc.onaudioprocess = (e) => {
+              try {
+                const data = e.inputBuffer.getChannelData(0);
+                const int16 = new Int16Array(data.length);
+                for (let i = 0; i < data.length; i++) {
+                  const s = Math.max(-1, Math.min(1, data[i]));
+                  int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+
+                sessionPromise.then((s: any) => s.sendRealtimeInput({
+                  media: {
+                    data: encode(new Uint8Array(int16.buffer)),
+                    mimeType: 'audio/pcm;rate=16000',
+                  }
+                }));
+              } catch {
+                // ignore
+              }
+            };
+
+            source.connect(proc);
+            proc.connect(inputCtx.destination);
+
+            if (imageData) {
+              sessionPromise.then((s: any) => s.sendRealtimeInput({
+                media: {
+                  data: imageData.split(',')[1],
+                  mimeType: 'image/jpeg',
+                }
+              }));
+            }
+          },
+          onmessage: async (msg: LiveServerMessage) => {
+            try {
+              const anyMsg: any = msg as any;
+              const modelTurnParts = anyMsg?.serverContent?.modelTurn?.parts;
+              const audioData = Array.isArray(modelTurnParts) ? modelTurnParts[0]?.inlineData?.data : undefined;
+              const currentOutputCtx = audioContextRef.current;
+              if (typeof audioData === 'string' && currentOutputCtx) {
+                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, currentOutputCtx.currentTime);
+                const buf = await decodeAudioData(decode(audioData), currentOutputCtx, 24000, 1);
+                const src = currentOutputCtx.createBufferSource();
+                src.buffer = buf;
+                src.connect(currentOutputCtx.destination);
+                src.start(nextStartTimeRef.current);
+                nextStartTimeRef.current += buf.duration;
+                audioSourcesRef.current.add(src);
+                src.onended = () => audioSourcesRef.current.delete(src);
+              }
+
+              const userText = getUserTranscriptText(msg);
+              if (typeof userText === 'string' && userText.trim()) {
+                setTranscript(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.role === 'user') {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = { ...last, text: last.text + userText };
+                    return updated;
+                  }
+                  return [...prev, { role: 'user', text: userText }];
+                });
+              }
+
+              const aiText = getAiTranscriptText(msg);
+              if (typeof aiText === 'string' && aiText.trim()) {
+                setTranscript(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.role === 'ai') {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = { ...last, text: last.text + aiText };
+                    return updated;
+                  }
+                  return [...prev, { role: 'ai', text: aiText }];
+                });
+              }
+
+              if (anyMsg?.serverContent?.interrupted) stopAllAudio();
+            } catch {
+              // ignore
+            }
+          },
+          onclose: () => {
+            stopLiveSession();
+          },
+          onerror: () => {
+            stopLiveSession();
+          },
+        },
+        config: {
+          responseModalities: [Modality.AUDIO],
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
+          systemInstruction: `أنت المعلم الذكي. اشرح بذكاء وهدوء. سياقك المرجعي المباشر: ${lectureText.substring(0, 10000)}`,
+        },
+      });
+
+      sessionRef.current = sessionPromise;
+    } catch (e: any) {
+      await stopLiveSession();
+      const msg = typeof e?.message === 'string' ? e.message : '';
+      alert(msg || (lang === 'ar' ? 'فشل بدء الجلسة المباشرة. تأكد من صحة المفتاح والصلاحيات.' : 'Failed to start live session. Check your key and permissions.'));
+    }
   };
 
   return (
@@ -333,10 +540,37 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
               </button>
            </div>
         </div>
-        <button onClick={startLiveSession} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
+        <div className="space-y-3">
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-[2.5rem] border border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-between gap-3">
+              <input
+                value={liveApiKey}
+                onChange={(e) => setLiveApiKey(e.target.value)}
+                placeholder={lang === 'ar' ? 'مفتاح Gemini Live (يحفظ محلياً)' : 'Gemini Live API Key (saved locally)'}
+                className="w-full bg-slate-100 dark:bg-slate-800/50 px-4 py-3 rounded-2xl text-xs font-bold outline-none border border-transparent focus:border-indigo-500/50"
+                type="password"
+              />
+              <button
+                onClick={() => {
+                  try { localStorage.setItem('gemini_live_api_key', liveApiKey.trim()); } catch { /* ignore */ }
+                }}
+                className="px-4 py-3 bg-indigo-600 text-white rounded-2xl font-black text-[10px] whitespace-nowrap"
+              >
+                {lang === 'ar' ? 'حفظ' : 'Save'}
+              </button>
+            </div>
+            <p className="mt-2 text-[10px] font-bold text-slate-400">
+              {lang === 'ar'
+                ? 'تنبيه: هذا المفتاح يُستخدم فقط للجلسة المباشرة من المتصفح.'
+                : 'Note: This key is used only for browser live sessions.'}
+            </p>
+          </div>
+
+          <button onClick={startLiveSession} className={`w-full p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
            <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية ذكية' : 'Smart discussion')}</p></div>
            {isLive ? <Waves className="absolute -bottom-4 -left-4 opacity-20" size={120} /> : <Mic className="absolute -bottom-4 -left-4 opacity-20" size={100} />}
-        </button>
+          </button>
+        </div>
       </div>
 
       {summaryAudioUrl && (
