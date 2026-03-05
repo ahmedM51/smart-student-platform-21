@@ -134,6 +134,23 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     anyCtx.__pcmWorkletLoaded = true;
   };
 
+  const containsLatin = (text: string) => /[A-Za-z]/.test(text);
+
+  const translateToArabic = async (text: string) => {
+    const clean = String(text || '').trim();
+    if (!clean) return '';
+    if (!containsLatin(clean)) return clean;
+
+    try {
+      const prompt = `حوّل النص التالي إلى العربية الفصحى فقط. لا تُبقِ أي كلمات إنجليزية. حافظ على المعنى:\n\n${clean}`;
+      const ar = await generateText(prompt, { model: 'gemini-3-flash-preview' });
+      const out = String(ar || '').trim();
+      return out || clean;
+    } catch {
+      return clean;
+    }
+  };
+
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
       const script = document.createElement('script');
@@ -455,7 +472,8 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
                 src.onended = () => audioSourcesRef.current.delete(src);
               }
 
-              const userText = getUserTranscriptText(msg);
+              const userTextRaw = getUserTranscriptText(msg);
+              const userText = typeof userTextRaw === 'string' ? await translateToArabic(userTextRaw) : undefined;
               if (typeof userText === 'string' && userText.trim()) {
                 setTranscript(prev => {
                   const last = prev[prev.length - 1];
@@ -468,7 +486,8 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
                 });
               }
 
-              const aiText = getAiTranscriptText(msg);
+              const aiTextRaw = getAiTranscriptText(msg);
+              const aiText = typeof aiTextRaw === 'string' ? await translateToArabic(aiTextRaw) : undefined;
               if (typeof aiText === 'string' && aiText.trim()) {
                 setTranscript(prev => {
                   const last = prev[prev.length - 1];

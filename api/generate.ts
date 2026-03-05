@@ -2,6 +2,29 @@ import { GoogleGenAI } from '@google/genai';
 
 type Part = { text?: string; inlineData?: { data: string; mimeType: string } };
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const isTransientGeminiError = (e: any) => {
+  const msg = String(e?.message || e?.error?.message || '');
+  const status = String(e?.status || e?.error?.status || '');
+  const code = String(e?.code || e?.error?.code || '');
+  return (
+    msg.includes('high demand') ||
+    msg.includes('UNAVAILABLE') ||
+    status === 'UNAVAILABLE' ||
+    code === '503' ||
+    msg.includes('503')
+  );
+};
+
+const getHttpStatusFromGeminiError = (e: any) => {
+  const msg = String(e?.message || '');
+  if (msg.includes('Missing GEMINI_API_KEY')) return 500;
+  if (msg.toLowerCase().includes('method not allowed')) return 405;
+  if (isTransientGeminiError(e)) return 503;
+  return 500;
+};
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -47,14 +70,29 @@ export default async function handler(req: any, res: any) {
     if (typeof temperature === 'number') config.temperature = temperature;
     if (typeof systemInstruction === 'string' && systemInstruction) config.systemInstruction = systemInstruction;
 
-    const response = await ai.models.generateContent({
-      model: finalModel,
-      contents: { parts: finalParts },
-      config: Object.keys(config).length ? config : undefined,
-    });
+    const maxAttempts = 3;
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: finalModel,
+          contents: { parts: finalParts },
+          config: Object.keys(config).length ? config : undefined,
+        });
 
-    return res.status(200).json({ text: response.text || '' });
+        return res.status(200).json({ text: response.text || '' });
+      } catch (e: any) {
+        lastErr = e;
+        if (attempt < maxAttempts && isTransientGeminiError(e)) {
+          const backoffMs = 400 * Math.pow(2, attempt - 1);
+          await sleep(backoffMs);
+          continue;
+        }
+        break;
+      }
+    }
   } catch (e: any) {
-    return res.status(500).json({ error: e?.message || 'Generate failed' });
+    const status = getHttpStatusFromGeminiError(e);
+    return res.status(status).json({ error: e?.message || 'Generate failed' });
   }
 }
