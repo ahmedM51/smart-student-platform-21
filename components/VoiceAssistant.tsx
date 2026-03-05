@@ -239,17 +239,9 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     setVideoStatus(lang === 'ar' ? 'جاري استيعاب محتوى ملفك...' : 'Ingesting your file...');
     
     try {
-      setVideoStatus(lang === 'ar' ? 'جاري تصميم المشاهد السينمائية...' : 'Designing cinematic scenes...');
-
-      const res = await fetch('/api/video', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lectureText: lectureText.substring(0, 2000), imageData }),
-      });
-      const data = await res.json().catch(() => ({} as any));
-      if (!res.ok) {
-        throw new Error(typeof data?.error === 'string' ? data.error : 'Video not supported');
-      }
+      throw new Error(lang === 'ar'
+        ? 'توليد الفيديو غير مدعوم على Vercel Serverless (Veo يحتاج Backend مخصص).'
+        : 'Video generation is not supported on Vercel Serverless (Veo requires a dedicated backend).');
     } catch (e: any) {
       console.error(e);
       alert(typeof e?.message === 'string' ? e.message : (lang === 'ar' ? 'توليد الفيديو غير مدعوم على Vercel Serverless.' : 'Video generation is not supported on Vercel Serverless.'));
@@ -275,13 +267,9 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       return;
     }
 
-    try {
-      const res = await fetch('/api/live', { method: 'POST' });
-      const data = await res.json().catch(() => ({} as any));
-      if (!res.ok) throw new Error(typeof data?.error === 'string' ? data.error : 'Live not supported');
-    } catch (e: any) {
-      alert(typeof e?.message === 'string' ? e.message : (lang === 'ar' ? 'جلسات الصوت المباشر غير مدعومة على Vercel Serverless.' : 'Live audio is not supported on Vercel Serverless.'));
-    }
+    alert(lang === 'ar'
+      ? 'جلسات الصوت المباشر تحتاج WebSocket backend (غير مدعومة على Vercel Serverless).'
+      : 'Live audio requires a WebSocket backend (not supported on Vercel Serverless).');
   };
 
   return (

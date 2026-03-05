@@ -27,6 +27,17 @@ const getSafeSession = async () => {
     
     return null;
   } catch (e) {
+    if (e && typeof e === 'object' && 'message' in e) {
+      const msg = String((e as any).message || '');
+      if (msg.toLowerCase().includes('invalid refresh token')) {
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
+        return null;
+      }
+    }
     console.warn("getSafeSession failed or timed out:", e);
     return null;
   }
