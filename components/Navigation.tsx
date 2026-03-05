@@ -14,9 +14,11 @@ interface NavProps {
   setPage: (p: PageId) => void;
   lang: 'ar' | 'en';
   onLogout: () => void;
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean) => void;
 }
 
-export const Navigation: React.FC<NavProps> = ({ currentPage, setPage, lang, onLogout }) => {
+export const Navigation: React.FC<NavProps> = ({ currentPage, setPage, lang, onLogout, mobileOpen, setMobileOpen }) => {
   const t = translations[lang];
   
   const menuGroups = [
@@ -49,7 +51,21 @@ export const Navigation: React.FC<NavProps> = ({ currentPage, setPage, lang, onL
   ];
 
   return (
-    <aside className={`w-64 bg-white dark:bg-slate-900 h-screen border-${lang === 'ar' ? 'l' : 'r'} border-slate-200 dark:border-slate-800 flex flex-col shadow-2xl z-50 transition-all duration-500 shrink-0`}>
+    <>
+      <div
+        onClick={() => setMobileOpen(false)}
+        className={`${mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'} md:hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 transition-opacity duration-300`}
+      />
+
+      <aside
+        className={`
+          w-64 bg-white dark:bg-slate-900 h-screen border-${lang === 'ar' ? 'l' : 'r'} border-slate-200 dark:border-slate-800
+          flex flex-col shadow-2xl z-50 transition-transform duration-300 shrink-0
+          fixed top-0 ${lang === 'ar' ? 'right-0' : 'left-0'}
+          ${mobileOpen ? 'translate-x-0' : (lang === 'ar' ? 'translate-x-full' : '-translate-x-full')}
+          md:static md:translate-x-0
+        `}
+      >
       <div className="p-8 flex items-center gap-3 border-b border-slate-100 dark:border-slate-800">
         <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-xl shadow-indigo-500/20">
           <GraduationCap size={24} />
@@ -67,7 +83,10 @@ export const Navigation: React.FC<NavProps> = ({ currentPage, setPage, lang, onL
             {group.items.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setPage(item.id as PageId)}
+                onClick={() => {
+                  setPage(item.id as PageId);
+                  setMobileOpen(false);
+                }}
                 className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all group ${
                   currentPage === item.id 
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
@@ -83,7 +102,10 @@ export const Navigation: React.FC<NavProps> = ({ currentPage, setPage, lang, onL
 
         <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-1">
           <button 
-            onClick={() => setPage('pricing')}
+            onClick={() => {
+              setPage('pricing');
+              setMobileOpen(false);
+            }}
             className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all ${
               currentPage === 'pricing' ? 'bg-amber-500 text-white shadow-lg' : 'text-amber-600 dark:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20'
             } ${lang === 'ar' ? 'flex-row' : 'flex-row-reverse'}`}
@@ -96,13 +118,17 @@ export const Navigation: React.FC<NavProps> = ({ currentPage, setPage, lang, onL
 
       <div className="p-5 border-t border-slate-100 dark:border-slate-800">
         <button 
-          onClick={onLogout}
+          onClick={() => {
+            setMobileOpen(false);
+            onLogout();
+          }}
           className={`w-full flex items-center gap-3 p-3.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-2xl transition-all font-bold text-xs ${lang === 'ar' ? 'flex-row' : 'flex-row-reverse'}`}
         >
           <LogOut size={18} />
           <span>{t.nav_logout}</span>
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };

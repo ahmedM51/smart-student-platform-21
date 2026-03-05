@@ -19,7 +19,7 @@ import { MyNotes } from './components/MyNotes';
 import { Privacy } from './components/Privacy';
 import { TakeQuiz } from './components/TakeQuiz';
 import { translations } from './i18n';
-import { Sun, Moon, Languages, Search, User as UserIcon, Sparkles, GraduationCap } from 'lucide-react';
+import { Sun, Moon, Languages, Search, User as UserIcon, Sparkles, GraduationCap, Menu } from 'lucide-react';
 import { db, supabase } from './services/db';
 
 const App: React.FC = () => {
@@ -34,10 +34,15 @@ const App: React.FC = () => {
   });
   
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isDark, setIsDark] = useState(() => {
     const saved = localStorage.getItem('theme');
     return saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches);
   });
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [currentPage]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -166,12 +171,26 @@ const App: React.FC = () => {
 
   return (
     <div className={`flex min-h-screen bg-slate-50 dark:bg-slate-950 font-cairo transition-all duration-500 selection:bg-indigo-500 selection:text-white`}>
-      <Navigation currentPage={currentPage} setPage={setCurrentPage} lang={lang} onLogout={handleLogout} />
+      <Navigation
+        currentPage={currentPage}
+        setPage={setCurrentPage}
+        lang={lang}
+        onLogout={handleLogout}
+        mobileOpen={mobileNavOpen}
+        setMobileOpen={setMobileNavOpen}
+      />
       
       <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
         {/* Header updated for maximum clarity in both modes */}
-        <header className="h-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-10 md:px-12 z-40 transition-all duration-500">
+        <header className="h-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 sm:px-6 md:px-12 z-40 transition-all duration-500">
           <div className="flex items-center gap-6 flex-1">
+             <button
+               onClick={() => setMobileNavOpen(true)}
+               className="md:hidden p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl shadow-sm border border-transparent dark:border-slate-700 active:scale-95"
+               aria-label="Open Menu"
+             >
+               <Menu size={20} />
+             </button>
              <div className="relative w-full max-w-md hidden md:block group">
                 <Search className={`absolute ${lang === 'ar' ? 'right-4' : 'left-4'} top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors`} size={18} />
                 <input 
@@ -214,7 +233,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-8 md:p-12 custom-scrollbar bg-slate-50 dark:bg-slate-950 transition-all duration-500">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-12 custom-scrollbar bg-slate-50 dark:bg-slate-950 transition-all duration-500">
           <div className="max-w-[1600px] mx-auto animate-in">
             {renderPage()}
           </div>
