@@ -101,8 +101,38 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  const ensurePcmWorklet = async (ctx: AudioContext) => {
+    const anyCtx: any = ctx as any;
+    if (anyCtx.__pcmWorkletLoaded) return;
+
+    const workletCode = `
+      class Pcm16Processor extends AudioWorkletProcessor {
+        process(inputs) {
+          const input = inputs && inputs[0] && inputs[0][0];
+          if (input) {
+            const len = input.length;
+            const int16 = new Int16Array(len);
+            for (let i = 0; i < len; i++) {
+              const s = Math.max(-1, Math.min(1, input[i]));
+              int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            this.port.postMessage(int16.buffer, [int16.buffer]);
+          }
+          return true;
+        }
+      }
+      registerProcessor('pcm16-processor', Pcm16Processor);
+    `;
+
+    const blob = new Blob([workletCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    await ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    anyCtx.__pcmWorkletLoaded = true;
+  };
 
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
@@ -129,11 +159,11 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     }
 
     try {
-      processorRef.current?.disconnect();
+      workletNodeRef.current?.disconnect();
     } catch {
       // ignore
     }
-    processorRef.current = null;
+    workletNodeRef.current = null;
 
     try {
       sourceNodeRef.current?.disconnect();
@@ -288,8 +318,8 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     setSummaryAudioUrl(null);
     try {
       const prompt = imageData 
-        ? "أعطني شرحاً صوتياً مفصلاً جداً لهذه الصورة وكأنك معلم يشرح لطلابه بأسلوب قصصي ممتع."
-        : `قم بإنشاء شرح صوتي كامل ومفصل جداً بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. المحتوى:\n${lectureText.substring(0, 15000)}`;
+        ? "أعطني شرحاً صوتياً مفصلاً جداً لهذه الصورة وكأنك معلم يشرح لطلابه بأسلوب قصصي ممتع. اكتب بالعربية فقط."
+        : `قم بإنشاء شرح صوتي كامل ومفصل جداً بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. اكتب بالعربية فقط. المحتوى:\n${lectureText.substring(0, 15000)}`;
 
       const summaryText = imageData
         ? await generateWithParts(
@@ -369,33 +399,34 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
           onopen: () => {
             setIsLive(true);
 
-            const source = inputCtx.createMediaStreamSource(stream);
-            const proc = inputCtx.createScriptProcessor(4096, 1, 1);
-            sourceNodeRef.current = source;
-            processorRef.current = proc;
-
-            proc.onaudioprocess = (e) => {
+            (async () => {
               try {
-                const data = e.inputBuffer.getChannelData(0);
-                const int16 = new Int16Array(data.length);
-                for (let i = 0; i < data.length; i++) {
-                  const s = Math.max(-1, Math.min(1, data[i]));
-                  int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                }
+                await ensurePcmWorklet(inputCtx);
+                const source = inputCtx.createMediaStreamSource(stream);
+                const worklet = new AudioWorkletNode(inputCtx, 'pcm16-processor');
+                sourceNodeRef.current = source;
+                workletNodeRef.current = worklet;
 
-                sessionPromise.then((s: any) => s.sendRealtimeInput({
-                  media: {
-                    data: encode(new Uint8Array(int16.buffer)),
-                    mimeType: 'audio/pcm;rate=16000',
+                worklet.port.onmessage = (ev) => {
+                  try {
+                    const buf = ev.data;
+                    if (!(buf instanceof ArrayBuffer)) return;
+                    sessionPromise.then((s: any) => s.sendRealtimeInput({
+                      media: {
+                        data: encode(new Uint8Array(buf)),
+                        mimeType: 'audio/pcm;rate=16000',
+                      }
+                    }));
+                  } catch {
+                    // ignore
                   }
-                }));
-              } catch {
-                // ignore
-              }
-            };
+                };
 
-            source.connect(proc);
-            proc.connect(inputCtx.destination);
+                source.connect(worklet);
+              } catch {
+                stopLiveSession();
+              }
+            })();
 
             if (imageData) {
               sessionPromise.then((s: any) => s.sendRealtimeInput({
@@ -472,6 +503,8 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 قواعد النطاق: ركّز 100% على الملف المرفوع كمصدر وحيد. اشرح المحتوى ثم أجب عن أي سؤال مرتبط بالملف فقط.
 إذا كان السؤال خارج محتوى الملف أو لا يمكن استنتاجه من المصدر، قل صراحة أنك لا تستطيع الجزم لأن المعلومة غير موجودة في الملف واطلب من المستخدم رفع جزء إضافي.
 قدّم الإجابات على شكل: شرح مختصر ثم نقاط واضحة وخلاصة.
+
+ممنوع استخدام الإنجليزية نهائياً في الإجابة.
 
 المصدر (ملف المستخدم):
 ${lectureText.substring(0, 12000)}`,
