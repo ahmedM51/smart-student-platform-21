@@ -89,13 +89,11 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const [isAudioSummaryLoading, setIsAudioSummaryLoading] = useState(false);
   const [summaryAudioUrl, setSummaryAudioUrl] = useState<string | null>(null);
 
-  const [liveApiKey, setLiveApiKey] = useState<string>(() => {
-    try {
-      return localStorage.getItem('gemini_live_api_key') || '';
-    } catch {
-      return '';
-    }
-  });
+  const platformLiveApiKey =
+    (import.meta as any).env?.VITE_GEMINI_LIVE_API_KEY ||
+    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
+    (import.meta as any).env?.VITE_API_KEY ||
+    '';
 
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -346,13 +344,15 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       return;
     }
 
-    if (!liveApiKey.trim()) {
-      alert(lang === 'ar' ? 'يرجى إدخال مفتاح Gemini Live أولاً.' : 'Please enter a Gemini Live API key first.');
+    if (!String(platformLiveApiKey || '').trim()) {
+      alert(lang === 'ar'
+        ? 'مفتاح Gemini Live غير مضبوط. أضف VITE_GEMINI_LIVE_API_KEY في Vercel Environment Variables.'
+        : 'Gemini Live key is missing. Add VITE_GEMINI_LIVE_API_KEY in Vercel Environment Variables.');
       return;
     }
 
     try {
-      const ai = new GoogleGenAI({ apiKey: liveApiKey.trim() });
+      const ai = new GoogleGenAI({ apiKey: String(platformLiveApiKey).trim() });
 
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -540,37 +540,10 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
               </button>
            </div>
         </div>
-        <div className="space-y-3">
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-[2.5rem] border border-slate-100 dark:border-slate-800">
-            <div className="flex items-center justify-between gap-3">
-              <input
-                value={liveApiKey}
-                onChange={(e) => setLiveApiKey(e.target.value)}
-                placeholder={lang === 'ar' ? 'مفتاح Gemini Live (يحفظ محلياً)' : 'Gemini Live API Key (saved locally)'}
-                className="w-full bg-slate-100 dark:bg-slate-800/50 px-4 py-3 rounded-2xl text-xs font-bold outline-none border border-transparent focus:border-indigo-500/50"
-                type="password"
-              />
-              <button
-                onClick={() => {
-                  try { localStorage.setItem('gemini_live_api_key', liveApiKey.trim()); } catch { /* ignore */ }
-                }}
-                className="px-4 py-3 bg-indigo-600 text-white rounded-2xl font-black text-[10px] whitespace-nowrap"
-              >
-                {lang === 'ar' ? 'حفظ' : 'Save'}
-              </button>
-            </div>
-            <p className="mt-2 text-[10px] font-bold text-slate-400">
-              {lang === 'ar'
-                ? 'تنبيه: هذا المفتاح يُستخدم فقط للجلسة المباشرة من المتصفح.'
-                : 'Note: This key is used only for browser live sessions.'}
-            </p>
-          </div>
-
-          <button onClick={startLiveSession} className={`w-full p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
+        <button onClick={startLiveSession} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
            <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية ذكية' : 'Smart discussion')}</p></div>
            {isLive ? <Waves className="absolute -bottom-4 -left-4 opacity-20" size={120} /> : <Mic className="absolute -bottom-4 -left-4 opacity-20" size={100} />}
-          </button>
-        </div>
+        </button>
       </div>
 
       {summaryAudioUrl && (
