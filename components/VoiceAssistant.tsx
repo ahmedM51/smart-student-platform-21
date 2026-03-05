@@ -467,7 +467,14 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
           inputAudioTranscription: {},
           outputAudioTranscription: {},
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: `أنت المعلم الذكي. اشرح بذكاء وهدوء. سياقك المرجعي المباشر: ${lectureText.substring(0, 10000)}`,
+          systemInstruction: `ابدأ بالترحيب دائماً: "أهلا بك" ثم عرّف نفسك: "أنا المعلم الذكي".
+قواعد اللغة: اكتب وتحدث بالعربية الفصحى دائماً حتى لو كتب المستخدم بالإنجليزية.
+قواعد النطاق: ركّز 100% على الملف المرفوع كمصدر وحيد. اشرح المحتوى ثم أجب عن أي سؤال مرتبط بالملف فقط.
+إذا كان السؤال خارج محتوى الملف أو لا يمكن استنتاجه من المصدر، قل صراحة أنك لا تستطيع الجزم لأن المعلومة غير موجودة في الملف واطلب من المستخدم رفع جزء إضافي.
+قدّم الإجابات على شكل: شرح مختصر ثم نقاط واضحة وخلاصة.
+
+المصدر (ملف المستخدم):
+${lectureText.substring(0, 12000)}`,
         },
       });
 
@@ -480,7 +487,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   };
 
   return (
-    <div className={`flex flex-col h-[calc(100vh-10rem)] gap-8 animate-in fade-in duration-500 pb-6 font-cairo ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
+    <div className={`flex flex-col min-h-[calc(100dvh-10rem)] h-auto gap-8 animate-in fade-in duration-500 pb-6 font-cairo ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
       
       {showVideoHelp && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-xl animate-in fade-in">
@@ -562,7 +569,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         </div>
       )}
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 overflow-hidden">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
         <div className="lg:col-span-7 flex flex-col bg-white dark:bg-slate-900 rounded-[3.5rem] shadow-2xl border dark:border-slate-800 overflow-hidden relative">
            <div className="bg-slate-50 dark:bg-slate-800 px-8 py-4 border-b flex justify-between items-center shadow-sm">
