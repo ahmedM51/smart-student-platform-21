@@ -121,6 +121,87 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     }
   }, []);
 
+  const escapeHtml = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const printConversation = () => {
+    const title = lang === 'ar' ? 'محادثة: تحدث مع الملف' : 'Conversation: Talk to File';
+    const fileLabel = fileType ? (lang === 'ar' ? `الملف: ${fileType}` : `File: ${fileType}`) : '';
+    const now = new Date();
+    const dateLabel = `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`;
+
+    const itemsHtml = transcript
+      .map((m) => {
+        const roleLabel = m.role === 'user'
+          ? (lang === 'ar' ? 'أنت' : 'You')
+          : (lang === 'ar' ? 'المعلم الذكي' : 'AI Teacher');
+        const safeText = escapeHtml(String(m.text || '')).replace(/\n/g, '<br/>');
+        const cls = m.role === 'user' ? 'user' : 'ai';
+        return `
+          <div class="msg ${cls}">
+            <div class="role">${roleLabel}</div>
+            <div class="text">${safeText}</div>
+          </div>
+        `;
+      })
+      .join('');
+
+    const html = `
+      <!doctype html>
+      <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${escapeHtml(title)}</title>
+          <style>
+            @page { margin: 16mm; }
+            body {
+              font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif;
+              color: #0f172a;
+              background: #ffffff;
+            }
+            .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
+            .title { font-size: 18px; font-weight: 800; }
+            .meta { font-size: 12px; color: #475569; }
+            .msgs { margin-top: 10px; }
+            .msg { border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+            .msg.user { background: #f1f5f9; }
+            .msg.ai { background: #eef2ff; }
+            .role { font-size: 12px; font-weight: 800; color: #334155; margin-bottom: 6px; }
+            .text { font-size: 13px; line-height: 1.7; white-space: normal; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div>
+              <div class="title">${escapeHtml(title)}</div>
+              <div class="meta">${escapeHtml(fileLabel)}</div>
+            </div>
+            <div class="meta">${escapeHtml(dateLabel)}</div>
+          </div>
+          <div class="msgs">${itemsHtml || `<div class="meta">${escapeHtml(lang === 'ar' ? 'لا توجد رسائل بعد.' : 'No messages yet.')}</div>`}</div>
+          <script>setTimeout(() => window.print(), 50);</script>
+        </body>
+      </html>
+    `;
+
+    const w = window.open('', '_blank', 'noopener,noreferrer');
+    if (!w) {
+      alert(lang === 'ar'
+        ? 'تعذر فتح نافذة الطباعة. تأكد من السماح بالنوافذ المنبثقة (Popups).'
+        : 'Could not open print window. Please allow popups.');
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
+
   useEffect(() => {
     return () => {
       if (pdfObjectUrl) {
@@ -747,6 +828,9 @@ ${part}
                   <Printer size={20} /> {lang === 'ar' ? 'طباعة PDF' : 'Print PDF'}
                 </button>
               ) : null}
+              <button onClick={printConversation} disabled={transcript.length === 0} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
+                <Printer size={20} /> {lang === 'ar' ? 'طباعة المحادثة' : 'Print Chat'}
+              </button>
               <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData) || (isDigestLoading && !imageData && lectureText.length > 20000)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
                 {isAudioSummaryLoading ? <Loader2 className="animate-spin" size={20} /> : <Headphones size={20} />}
                 {lang === 'ar' ? 'بودكاست الشرح' : 'Audio Podcast'}
