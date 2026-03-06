@@ -4,10 +4,9 @@ import {
   Upload, Video, Headphones, Download, FileText, 
   X, Image as ImageIcon, Waves, FileAudio, PlayCircle, PauseCircle,
   Radio, Monitor, Info, ShieldAlert, CheckCircle2, Cpu, Film, Beaker,
-  History, ArrowRight, Share2, Printer
+  History, ArrowRight, Share2
 } from 'lucide-react';
-import { generateText, generateWithParts, textToSpeech } from '../services/geminiService';
-import { GoogleGenAI, Modality, LiveServerMessage } from '@google/genai';
+import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 
 // --- Audio & File Helpers ---
 function encode(bytes: Uint8Array) {
@@ -89,7 +88,10 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const [isAudioSummaryLoading, setIsAudioSummaryLoading] = useState(false);
   const [summaryAudioUrl, setSummaryAudioUrl] = useState<string | null>(null);
 
-  const platformLiveApiKey =
+  const [lectureDigest, setLectureDigest] = useState<string>('');
+  const [isDigestLoading, setIsDigestLoading] = useState(false);
+
+  const platformApiKey =
     (import.meta as any).env?.VITE_GEMINI_LIVE_API_KEY ||
     (import.meta as any).env?.VITE_GEMINI_API_KEY ||
     (import.meta as any).env?.VITE_API_KEY ||
@@ -97,59 +99,8 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const inputAudioContextRef = useRef<AudioContext | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-
-  const ensurePcmWorklet = async (ctx: AudioContext) => {
-    const anyCtx: any = ctx as any;
-    if (anyCtx.__pcmWorkletLoaded) return;
-
-    const workletCode = `
-      class Pcm16Processor extends AudioWorkletProcessor {
-        process(inputs) {
-          const input = inputs && inputs[0] && inputs[0][0];
-          if (input) {
-            const len = input.length;
-            const int16 = new Int16Array(len);
-            for (let i = 0; i < len; i++) {
-              const s = Math.max(-1, Math.min(1, input[i]));
-              int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            }
-            this.port.postMessage(int16.buffer, [int16.buffer]);
-          }
-          return true;
-        }
-      }
-      registerProcessor('pcm16-processor', Pcm16Processor);
-    `;
-
-    const blob = new Blob([workletCode], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    await ctx.audioWorklet.addModule(url);
-    URL.revokeObjectURL(url);
-    anyCtx.__pcmWorkletLoaded = true;
-  };
-
-  const containsLatin = (text: string) => /[A-Za-z]/.test(text);
-
-  const translateToArabic = async (text: string) => {
-    const clean = String(text || '').trim();
-    if (!clean) return '';
-    if (!containsLatin(clean)) return clean;
-
-    try {
-      const prompt = `حوّل النص التالي إلى العربية الفصحى فقط. لا تُبقِ أي كلمات إنجليزية. حافظ على المعنى:\n\n${clean}`;
-      const ar = await generateText(prompt, { model: 'gemini-3-flash-preview' });
-      const out = String(ar || '').trim();
-      return out || clean;
-    } catch {
-      return clean;
-    }
-  };
 
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
@@ -163,77 +114,38 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   }, []);
 
   const stopAllAudio = () => {
-    audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) { /* ignore */ } });
+    audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
     audioSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
   };
 
-  const stopLiveSession = async () => {
-    try {
-      stopAllAudio();
-    } catch {
-      // ignore
-    }
+  // --- Begin Defensive Transcript Handlers Patch (TS18048) ---
 
-    try {
-      workletNodeRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    workletNodeRef.current = null;
-
-    try {
-      sourceNodeRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    sourceNodeRef.current = null;
-
-    try {
-      inputAudioContextRef.current?.close();
-    } catch {
-      // ignore
-    }
-    inputAudioContextRef.current = null;
-
-    try {
-      audioContextRef.current?.close();
-    } catch {
-      // ignore
-    }
-    audioContextRef.current = null;
-
-    try {
-      mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    } catch {
-      // ignore
-    }
-    mediaStreamRef.current = null;
-
-    try {
-      const session = await sessionRef.current;
-      if (session && typeof session.close === 'function') session.close();
-    } catch {
-      // ignore
-    }
-    sessionRef.current = null;
-
-    setIsLive(false);
-  };
-
+  // Defensive helper for safely extracting text for user transcript
   function getUserTranscriptText(msg: LiveServerMessage): string | undefined {
-    const anyMsg: any = msg as any;
-    const text = anyMsg?.serverContent?.inputTranscription?.text;
-    return typeof text === 'string' ? text : undefined;
+    if (
+      msg.serverContent &&
+      msg.serverContent.inputTranscription &&
+      typeof msg.serverContent.inputTranscription.text === "string"
+    ) {
+      return msg.serverContent.inputTranscription.text;
+    }
+    return undefined;
   }
 
+  // Defensive helper for safely extracting text for ai transcript
   function getAiTranscriptText(msg: LiveServerMessage): string | undefined {
-    const anyMsg: any = msg as any;
-    const parts = anyMsg?.serverContent?.modelTurn?.parts;
-    if (!Array.isArray(parts)) return undefined;
-    const textPart = parts.find((p: any) => typeof p?.text === 'string');
-    return typeof textPart?.text === 'string' ? textPart.text : undefined;
+    if (
+      msg.serverContent &&
+      msg.serverContent.outputTranscription &&
+      typeof msg.serverContent.outputTranscription.text === "string"
+    ) {
+      return msg.serverContent.outputTranscription.text;
+    }
+    return undefined;
   }
+
+  // --- End Defensive Transcript Handlers Patch ---
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -241,6 +153,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     setFileLoading(true);
     setSummaryAudioUrl(null); 
     setVideoUrl(null);
+    setLectureDigest('');
     try {
       if (file.type === 'application/pdf') {
         const pdfjs = (window as any).pdfjsLib;
@@ -255,12 +168,14 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         setLectureText(text);
         setFileType('pdf');
         setImageData(null);
+        buildLectureDigest(text);
       } else if (file.type.startsWith('image/')) {
         const reader = new FileReader();
         reader.onload = (ev) => {
           setImageData(ev.target?.result as string);
           setFileType('image');
           setLectureText('');
+          setLectureDigest('');
         };
         reader.readAsDataURL(file);
       } else {
@@ -268,6 +183,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         setLectureText(text);
         setFileType('text');
         setImageData(null);
+        buildLectureDigest(text);
       }
       setTranscript(prev => [
         ...prev, 
@@ -281,74 +197,22 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     } catch (err) { alert("خطأ في التحميل"); } finally { setFileLoading(false); }
   };
 
-  const exportTranscriptToPDF = () => {
-    if (transcript.length === 0) return;
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return alert(lang === 'ar' ? "يرجى تفعيل النوافذ المنبثقة." : "Please enable popups.");
-
-    const contentHtml = transcript.map((m, i) => `
-      <div style="margin-bottom: 20px; padding: 15px; border-radius: 15px; background: ${m.role === 'user' ? '#f0f4ff' : '#f0fff4'}; border: 1px solid ${m.role === 'user' ? '#dce3f1' : '#dcf1dc'};">
-        <strong style="color: ${m.role === 'user' ? '#4f46e5' : '#10b981'}; display: block; margin-bottom: 5px; font-size: 12px; text-transform: uppercase;">
-          ${m.role === 'user' ? (lang === 'ar' ? 'أنت (الطالب)' : 'You (Student)') : (lang === 'ar' ? 'المعلم الذكي' : 'Smart AI Tutor')}
-        </strong>
-        <div style="font-size: 14px; line-height: 1.6; color: #1e293b;">${m.text}</div>
-      </div>
-    `).join('');
-
-    printWindow.document.write(`
-      <html dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-        <head>
-          <title>Smart Student - Conversation Report</title>
-          <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" rel="stylesheet">
-          <style>
-            body { font-family: 'Cairo', sans-serif; padding: 40px; background: #fff; color: #1e293b; }
-            .header { border-bottom: 4px solid #4f46e5; padding-bottom: 20px; margin-bottom: 30px; text-align: center; }
-            .header h1 { color: #4f46e5; margin: 0; font-size: 24px; font-weight: 900; }
-            .footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 10px; color: #94a3b8; font-weight: bold; }
-            @media print { * { -webkit-print-color-adjust: exact; } }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>منصة الطالب الذكي - سجل الحوار التعليمي</h1>
-            <p style="margin-top: 5px; font-size: 12px; color: #64748b;">تاريخ الجلسة: ${new Date().toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-US')}</p>
-          </div>
-          <div class="transcript-container">${contentHtml}</div>
-          <div class="footer">تم استخراج هذا التقرير آلياً بواسطة المساعد الصوتي الذكي - 2025</div>
-          <script>
-            window.onload = () => {
-              setTimeout(() => {
-                window.print();
-                window.addEventListener('afterprint', () => { window.close(); });
-              }, 1000);
-            }
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
-
   const generateAudioSummary = async () => {
     if (!lectureText && !imageData) return alert("يرجى رفع ملف أولاً.");
     setIsAudioSummaryLoading(true);
     setSummaryAudioUrl(null);
     try {
+      await ensureDigestForText();
+      const src = lectureDigest.trim() ? lectureDigest : lectureText;
       const prompt = imageData 
         ? "أعطني شرحاً صوتياً مفصلاً جداً لهذه الصورة وكأنك معلم يشرح لطلابه بأسلوب قصصي ممتع. اكتب بالعربية فقط."
-        : `قم بإنشاء شرح صوتي كامل ومفصل جداً بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. اكتب بالعربية فقط. المحتوى:\n${lectureText.substring(0, 15000)}`;
+        : `قم بإنشاء شرح صوتي كامل ومفصل جداً يغطي المحاضرة بالكامل بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. اكتب بالعربية فقط.
+محتوى المحاضرة/ملخصها المنظم:
+${src.substring(0, 20000)}`;
 
-      const summaryText = imageData
-        ? await generateWithParts(
-            [
-              { inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } },
-              { text: prompt }
-            ],
-            { model: 'gemini-3-flash-preview' }
-          )
-        : await generateText(prompt, { model: 'gemini-3-flash-preview' });
-
-      const audioBase64: string = await textToSpeech(`اقرأ هذا الشرح بأسلوب تفاعلي: ${summaryText}`, 'Kore');
+      const textRes = await generateText(prompt, { model: 'gemini-3-flash-preview' });
+      const summaryText = textRes || "";
+      const audioBase64 = await textToSpeech(`اقرأ هذا الشرح بأسلوب تفاعلي: ${summaryText}`, 'Kore');
       if (typeof audioBase64 === "string") {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
         const audioBuffer = await decodeAudioData(decode(audioBase64), ctx, 24000, 1);
@@ -360,16 +224,81 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 
   const generateSmartVideo = async () => {
     if (!lectureText && !imageData) return alert("يرجى رفع ملف (PDF أو صورة) أولاً ليتمكن الذكاء الاصطناعي من تحليله وتوليد الفيديو.");
+    
+    // API Key Requirement for Veo
+    if (!await (window as any).aistudio.hasSelectedApiKey()) {
+      alert("توليد الفيديو يتطلب اختيار مفتاح API مدفوع (Paid) من Google Cloud. سيتم فتح نافذة الاختيار الآن.");
+      await (window as any).aistudio.openSelectKey();
+      return; 
+    }
+    
     setIsVideoLoading(true);
     setVideoStatus(lang === 'ar' ? 'جاري استيعاب محتوى ملفك...' : 'Ingesting your file...');
     
     try {
-      throw new Error(lang === 'ar'
-        ? 'توليد الفيديو غير مدعوم على Vercel Serverless (Veo يحتاج Backend مخصص).'
-        : 'Video generation is not supported on Vercel Serverless (Veo requires a dedicated backend).');
+      // Step 1: Analyze content to create a visual prompt
+      const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
+      let prompt = imageData 
+        ? "Analyze this image and create a highly detailed cinematic prompt for a 5-second educational video explaining its core concept. Describe motion, lighting, and camera work. Respond only with the English prompt."
+        : `Summarize the following lecture into a cinematic visual prompt for a 5-second video that explains the main concept visually. Use descriptive artistic language. 
+           Content: ${lectureText.substring(0, 2000)}
+           Respond only with the English prompt.`;
+
+      const analysisRes = await ai.models.generateContent({ 
+        model: 'gemini-3-flash-preview', 
+        contents: imageData 
+          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: prompt }] } 
+          : { parts: [{ text: prompt }] } 
+      });
+
+      const visualPrompt: string = analysisRes.text || "Scientific visualization of " + (lectureText.substring(0, 50) || "lecture");
+      setVideoStatus(lang === 'ar' ? 'جاري تصميم المشاهد السينمائية...' : 'Designing cinematic scenes...');
+
+      // Step 2: Generate Video using Veo
+      let videoConfig: any = { 
+        model: 'veo-3.1-fast-generate-preview', 
+        prompt: visualPrompt,
+        config: { 
+          numberOfVideos: 1, 
+          resolution: '720p', 
+          aspectRatio: '16:9' 
+        } 
+      };
+
+      // If user uploaded an image, use it as the starting frame for a "real" connection
+      if (imageData) {
+        videoConfig.image = {
+          imageBytes: imageData.split(',')[1],
+          mimeType: 'image/jpeg'
+        };
+      }
+
+      let operation = await ai.models.generateVideos(videoConfig);
+
+      setVideoStatus(lang === 'ar' ? 'جاري الرندرة الحقيقية (قد يستغرق 3-5 دقائق)...' : 'Rendering real video (takes 3-5 mins)...');
+
+      // Step 3: Wait for operation
+      while (!operation.done) {
+        await new Promise(r => setTimeout(r, 10000));
+        operation = await ai.operations.getVideosOperation({ operation });
+      }
+
+      setVideoStatus(lang === 'ar' ? 'تجهيز ملف MP4 للتحميل...' : 'Preparing MP4 for download...');
+
+      const downloadLink: string | undefined = operation.response?.generatedVideos?.[0]?.video?.uri;
+      if (typeof downloadLink === "string") {
+        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const blob = await response.blob();
+        setVideoUrl(URL.createObjectURL(blob));
+      }
     } catch (e: any) {
       console.error(e);
-      alert(typeof e?.message === 'string' ? e.message : (lang === 'ar' ? 'توليد الفيديو غير مدعوم على Vercel Serverless.' : 'Video generation is not supported on Vercel Serverless.'));
+      if (typeof e?.message === "string" && e.message.includes("entity was not found")) {
+        alert("يرجى اختيار مفتاح API مدفوع مرتبط بمشروع Google Cloud مفعل فيه الفواتير (Billing).");
+        await (window as any).aistudio.openSelectKey();
+      } else {
+        alert("فشل توليد الفيديو. تأكد من استهلاكك للـ Quota أو صلاحية المفتاح.");
+      }
     } finally {
       setIsVideoLoading(false);
     }
@@ -391,133 +320,78 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       return;
     }
 
-    if (!String(platformLiveApiKey || '').trim()) {
+    await ensureDigestForText();
+    if (!String(platformApiKey || '').trim()) {
       alert(lang === 'ar'
-        ? 'مفتاح Gemini Live غير مضبوط. أضف VITE_GEMINI_LIVE_API_KEY في Vercel Environment Variables.'
-        : 'Gemini Live key is missing. Add VITE_GEMINI_LIVE_API_KEY in Vercel Environment Variables.');
+        ? 'مفتاح المنصة غير مضبوط. أضف VITE_GEMINI_LIVE_API_KEY أو VITE_GEMINI_API_KEY أو VITE_API_KEY.'
+        : 'Missing platform API key. Set VITE_GEMINI_LIVE_API_KEY / VITE_GEMINI_API_KEY / VITE_API_KEY.');
       return;
     }
 
-    try {
-      const ai = new GoogleGenAI({ apiKey: String(platformLiveApiKey).trim() });
+    const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
+    const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+    const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    audioContextRef.current = outputCtx;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      inputAudioContextRef.current = inputCtx;
-      audioContextRef.current = outputCtx;
-      nextStartTimeRef.current = 0;
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
-
-      const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-        callbacks: {
-          onopen: () => {
-            setIsLive(true);
-
-            (async () => {
-              try {
-                await ensurePcmWorklet(inputCtx);
-                const source = inputCtx.createMediaStreamSource(stream);
-                const worklet = new AudioWorkletNode(inputCtx, 'pcm16-processor');
-                sourceNodeRef.current = source;
-                workletNodeRef.current = worklet;
-
-                worklet.port.onmessage = (ev) => {
-                  try {
-                    const buf = ev.data;
-                    if (!(buf instanceof ArrayBuffer)) return;
-                    sessionPromise.then((s: any) => s.sendRealtimeInput({
-                      media: {
-                        data: encode(new Uint8Array(buf)),
-                        mimeType: 'audio/pcm;rate=16000',
-                      }
-                    }));
-                  } catch {
-                    // ignore
-                  }
-                };
-
-                source.connect(worklet);
-              } catch {
-                stopLiveSession();
-              }
-            })();
-
-            if (imageData) {
-              sessionPromise.then((s: any) => s.sendRealtimeInput({
-                media: {
-                  data: imageData.split(',')[1],
-                  mimeType: 'image/jpeg',
-                }
-              }));
-            }
-          },
-          onmessage: async (msg: LiveServerMessage) => {
-            try {
-              const anyMsg: any = msg as any;
-              const modelTurnParts = anyMsg?.serverContent?.modelTurn?.parts;
-              const audioData = Array.isArray(modelTurnParts) ? modelTurnParts[0]?.inlineData?.data : undefined;
-              const currentOutputCtx = audioContextRef.current;
-              if (typeof audioData === 'string' && currentOutputCtx) {
-                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, currentOutputCtx.currentTime);
-                const buf = await decodeAudioData(decode(audioData), currentOutputCtx, 24000, 1);
-                const src = currentOutputCtx.createBufferSource();
-                src.buffer = buf;
-                src.connect(currentOutputCtx.destination);
-                src.start(nextStartTimeRef.current);
-                nextStartTimeRef.current += buf.duration;
-                audioSourcesRef.current.add(src);
-                src.onended = () => audioSourcesRef.current.delete(src);
-              }
-
-              const userTextRaw = getUserTranscriptText(msg);
-              const userText = typeof userTextRaw === 'string' ? await translateToArabic(userTextRaw) : undefined;
-              if (typeof userText === 'string' && userText.trim()) {
-                setTranscript(prev => {
-                  const last = prev[prev.length - 1];
-                  if (last && last.role === 'user') {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = { ...last, text: last.text + userText };
-                    return updated;
-                  }
-                  return [...prev, { role: 'user', text: userText }];
-                });
-              }
-
-              const aiTextRaw = getAiTranscriptText(msg);
-              const aiText = typeof aiTextRaw === 'string' ? await translateToArabic(aiTextRaw) : undefined;
-              if (typeof aiText === 'string' && aiText.trim()) {
-                setTranscript(prev => {
-                  const last = prev[prev.length - 1];
-                  if (last && last.role === 'ai') {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = { ...last, text: last.text + aiText };
-                    return updated;
-                  }
-                  return [...prev, { role: 'ai', text: aiText }];
-                });
-              }
-
-              if (anyMsg?.serverContent?.interrupted) stopAllAudio();
-            } catch {
-              // ignore
-            }
-          },
-          onclose: () => {
-            stopLiveSession();
-          },
-          onerror: () => {
-            stopLiveSession();
-          },
+    const sessionPromise = ai.live.connect({
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      callbacks: {
+        onopen: () => {
+          setIsLive(true);
+          const source = inputCtx.createMediaStreamSource(stream);
+          const proc = inputCtx.createScriptProcessor(4096, 1, 1);
+          proc.onaudioprocess = (e) => {
+            const data = e.inputBuffer.getChannelData(0);
+            const int16 = new Int16Array(data.length);
+            for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
+            sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } }));
+          };
+          source.connect(proc);
+          proc.connect(inputCtx.destination);
+          if (imageData) sessionPromise.then(s => s.sendRealtimeInput({ media: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }));
         },
-        config: {
-          responseModalities: [Modality.AUDIO],
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: `ابدأ بالترحيب دائماً: "أهلا بك" ثم عرّف نفسك: "أنا المعلم الذكي".
+        onmessage: async (msg: LiveServerMessage) => {
+          // Defensive code: see lint context (TS18048) - we use our safe helpers.
+          // Also strictly enforce type for transcript items to have a string `text`
+          const modelTurnParts = msg.serverContent?.modelTurn?.parts;
+          const audioData = Array.isArray(modelTurnParts) && modelTurnParts[0]?.inlineData?.data;
+          const outputCtx = audioContextRef.current;
+          if (audioData && outputCtx) {
+            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
+            const buf = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
+            const s = outputCtx.createBufferSource();
+            s.buffer = buf; s.connect(outputCtx.destination); s.start(nextStartTimeRef.current);
+            nextStartTimeRef.current += buf.duration;
+            audioSourcesRef.current.add(s);
+            s.onended = () => audioSourcesRef.current.delete(s);
+          }
+          // Defensive: check user transcription via helper
+          const userText = getUserTranscriptText(msg);
+          if (typeof userText === "string") {
+            setTranscript(p => [
+              ...p,
+              { role: 'user', text: userText }
+            ]);
+          }
+          // Defensive: check ai transcription via helper
+          const aiText = getAiTranscriptText(msg);
+          if (typeof aiText === "string") {
+            setTranscript(p => [
+              ...p,
+              { role: 'ai', text: aiText }
+            ]);
+          }
+          if (msg.serverContent && msg.serverContent.interrupted) stopAllAudio();
+        },
+        onclose: () => setIsLive(false),
+        onerror: () => setIsLive(false)
+      },
+      config: {
+        responseModalities: [Modality.AUDIO],
+        inputAudioTranscription: {}, outputAudioTranscription: {},
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
+        systemInstruction: `ابدأ بالترحيب دائماً: "أهلا بك" ثم عرّف نفسك: "أنا المعلم الذكي".
 قواعد اللغة: اكتب وتحدث بالعربية الفصحى دائماً حتى لو كتب المستخدم بالإنجليزية.
 قواعد النطاق: ركّز 100% على الملف المرفوع كمصدر وحيد. اشرح المحتوى ثم أجب عن أي سؤال مرتبط بالملف فقط.
 إذا كان السؤال خارج محتوى الملف أو لا يمكن استنتاجه من المصدر، قل صراحة أنك لا تستطيع الجزم لأن المعلومة غير موجودة في الملف واطلب من المستخدم رفع جزء إضافي.
@@ -526,24 +400,78 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 ممنوع استخدام الإنجليزية نهائياً في الإجابة.
 
 المصدر (ملف المستخدم):
-${lectureText.substring(0, 12000)}`,
-        },
-      });
+${(lectureDigest.trim() ? lectureDigest : lectureText).substring(0, 20000)}`,
+      },
+    });
+    sessionRef.current = await sessionPromise;
+  };
 
-      sessionRef.current = sessionPromise;
-    } catch (e: any) {
-      await stopLiveSession();
-      const msg = typeof e?.message === 'string' ? e.message : '';
-      alert(msg || (lang === 'ar' ? 'فشل بدء الجلسة المباشرة. تأكد من صحة المفتاح والصلاحيات.' : 'Failed to start live session. Check your key and permissions.'));
+  const chunkText = (text: string, chunkSize: number) => {
+    const t = String(text || '');
+    const out: string[] = [];
+    for (let i = 0; i < t.length; i += chunkSize) out.push(t.slice(i, i + chunkSize));
+    return out;
+  };
+
+  const buildLectureDigest = async (text: string): Promise<string> => {
+    const src = String(text || '').trim();
+    if (!src) {
+      setLectureDigest('');
+      return '';
+    }
+
+    setIsDigestLoading(true);
+    try {
+      const chunks = chunkText(src, 6000);
+      let digest = '';
+      for (let i = 0; i < chunks.length; i++) {
+        const part = chunks[i];
+        const prompt = `أنت مُلخِّص محاضرات دقيق.
+الهدف: بناء ملخص تراكمي شامل للمحاضرة كلها، بالعربية الفصحى فقط.
+
+الملخص الحالي (قد يكون فارغاً):
+${digest}
+
+الجزء الجديد رقم ${i + 1} من ${chunks.length}:
+${part}
+
+حدّث الملخص ليشمل أهم المفاهيم والتعاريف والقوانين/المعادلات والخطوات والأمثلة إن وجدت.
+مخرجاتك يجب أن تكون بالعربية فقط، وبصيغة منظمة:
+- عناوين رئيسية
+- نقاط أساسية
+- مصطلحات وتعريفات
+- أسئلة مراجعة قصيرة (5-10) في النهاية`;
+
+        const updated = await generateText(prompt, { model: 'gemini-3-flash-preview' });
+        digest = String(updated || '').trim() || digest;
+        setLectureDigest(digest);
+      }
+
+      return digest;
+    } catch {
+      // ignore
+      return '';
+    } finally {
+      setIsDigestLoading(false);
     }
   };
 
+  const ensureDigestForText = async () => {
+    if (imageData) return;
+    const src = String(lectureText || '').trim();
+    if (!src) return;
+    if (lectureDigest.trim()) return;
+    if (src.length <= 20000) return;
+    await buildLectureDigest(src);
+  };
+
   return (
-    <div className={`flex flex-col min-h-[calc(100dvh-10rem)] h-auto gap-8 animate-in fade-in duration-500 pb-6 font-cairo ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
+    <div className={`flex flex-col min-h-[calc(100dvh-10rem)] h-auto gap-8 animate-in fade-in duration-500 pb-6 ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
       
+      {/* Help Modal */}
       {showVideoHelp && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-xl animate-in fade-in">
-           <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[3.5rem] p-10 shadow-2xl relative border border-white/10 text-right" dir="rtl">
+           <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[3.5rem] p-10 shadow-2xl relative border border-white/10">
               <button onClick={() => setShowVideoHelp(false)} className="absolute top-8 left-8 text-slate-400 hover:text-rose-500 transition-all"><X size={24} /></button>
               <h3 className="text-3xl font-black mb-6 flex items-center gap-4"><Info className="text-indigo-600" size={32} /> كيف نولد فيديو من ملفاتك؟</h3>
               
@@ -567,7 +495,9 @@ ${lectureText.substring(0, 12000)}`,
                     <ul className="text-[11px] text-amber-700 dark:text-amber-400 space-y-2 font-bold list-disc pr-4">
                        <li>يجب استخدام مفتاح API من مشروع Google Cloud مفعل فيه نظام الدفع (Paid Tier).</li>
                        <li>النماذج المستخدمة (Veo) تستهلك Quota عالية، لذا قد يستغرق التوليد بضع دقائق.</li>
+                       <li>يمكنك متابعة حالة التوليد من شريط التقدم في واجهة الفيديو.</li>
                     </ul>
+                    <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="text-[10px] text-indigo-600 underline block mt-4">رابط تفعيل الدفع في Google Cloud</a>
                  </div>
               </div>
               <button onClick={() => setShowVideoHelp(false)} className="w-full mt-10 py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 transition-all">جاهز للتوليد الحقيقي</button>
@@ -575,6 +505,7 @@ ${lectureText.substring(0, 12000)}`,
         </div>
       )}
 
+      {/* Top Controls Bar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-8 rounded-[3.5rem] shadow-xl border border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-4">
            <div className="flex items-center gap-6">
@@ -582,12 +513,12 @@ ${lectureText.substring(0, 12000)}`,
                  {fileLoading ? <Loader2 className="animate-spin" /> : fileType === 'image' ? <ImageIcon /> : <FileText />}
               </div>
               <div>
-                 <h2 className="text-2xl font-black">{lang === 'ar' ? 'المختبر التعليمي الذكي' : 'Smart Learning Lab'}</h2>
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{fileType ? `${lang === 'ar' ? 'المرجع:' : 'Ref:'} ${fileType}` : (lang === 'ar' ? 'ارفع ملفاً للبدء' : 'Upload to start')}</p>
+                 <h2 className="text-2xl font-black">{lang === 'ar' ? 'المساعد المتعدد الوسائط' : 'Multi-modal Assistant'}</h2>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{fileType ? `${lang === 'ar' ? 'المرجع النشط:' : 'Active Ref:'} ${fileType}` : (lang === 'ar' ? 'ارفع ملفاً للبدء' : 'Upload to start')}</p>
               </div>
            </div>
            <div className="flex gap-3 flex-wrap">
-              <label className="p-4 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white rounded-2xl cursor-pointer transition-all border dark:border-slate-700 shadow-sm">
+              <label className="p-4 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white rounded-2xl cursor-pointer transition-all border dark:border-slate-700">
                  <Upload size={24} /><input type="file" className="hidden" accept=".pdf,.txt,image/*" onChange={handleFileUpload} />
               </label>
               <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
@@ -595,23 +526,24 @@ ${lectureText.substring(0, 12000)}`,
                 {lang === 'ar' ? 'بودكاست الشرح' : 'Audio Podcast'}
               </button>
               <button onClick={generateSmartVideo} className="px-6 py-4 bg-purple-600 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all">
-                <Video size={20} /> {lang === 'ar' ? 'توليد فيديو VEO' : 'Generate VEO'}
+                <Video size={20} /> {lang === 'ar' ? 'توليد فيديو MP4' : 'Generate MP4'}
               </button>
            </div>
         </div>
-        <button onClick={startLiveSession} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
-           <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية ذكية' : 'Smart discussion')}</p></div>
+        <button onClick={() => isLive ? sessionRef.current?.close() : startLiveSession()} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
+           <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية للمحتوى' : 'Audio discussion')}</p></div>
            {isLive ? <Waves className="absolute -bottom-4 -left-4 opacity-20" size={120} /> : <Mic className="absolute -bottom-4 -left-4 opacity-20" size={100} />}
         </button>
       </div>
 
+      {/* Audio Download Bar */}
       {summaryAudioUrl && (
-        <div className="bg-emerald-50 dark:bg-emerald-900/10 p-6 rounded-[2.5rem] border border-emerald-100 dark:border-emerald-800 flex items-center justify-between gap-4 animate-in slide-in-from-top-4 shadow-sm">
+        <div className="bg-emerald-50 dark:bg-emerald-900/10 p-6 rounded-[2.5rem] border border-emerald-100 dark:border-emerald-800 flex items-center justify-between gap-4 animate-in slide-in-from-top-4">
            <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-emerald-500 text-white rounded-xl flex items-center justify-center shadow-lg"><FileAudio size={24} /></div>
               <div>
-                <h4 className="font-black text-emerald-800 dark:text-emerald-200">{lang === 'ar' ? 'البودكاست التعليمي جاهز' : 'Podcast Ready'}</h4>
-                <p className="text-[10px] font-bold text-emerald-600">{lang === 'ar' ? 'شرح صوتي ممتع للملف المرفوع' : 'Audio summary based on your file'}</p>
+                <h4 className="font-black text-emerald-800 dark:text-emerald-200">{lang === 'ar' ? 'البودكاست التعليمي جاهز' : 'Educational Podcast Ready'}</h4>
+                <p className="text-[10px] font-bold text-emerald-600">{lang === 'ar' ? 'شرح صوتي مفصل يعتمد على ملفك' : 'Detailed audio based on your file'}</p>
               </div>
            </div>
            <div className="flex items-center gap-4 flex-1 max-w-xl">
@@ -621,34 +553,22 @@ ${lectureText.substring(0, 12000)}`,
         </div>
       )}
 
+      {/* Main Workspace Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
+        {/* Chat Transcript Panel */}
         <div className="lg:col-span-7 flex flex-col bg-white dark:bg-slate-900 rounded-[3.5rem] shadow-2xl border dark:border-slate-800 overflow-hidden relative">
-           <div className="bg-slate-50 dark:bg-slate-800 px-8 py-4 border-b flex justify-between items-center shadow-sm">
-              <div className="flex items-center gap-3">
-                 <History size={18} className="text-indigo-600" />
-                 <h4 className="font-black text-xs uppercase tracking-widest">{lang === 'ar' ? 'سجل النقاش المباشر' : 'Live Discussion Log'}</h4>
-              </div>
-              {transcript.length > 0 && (
-                <button 
-                  onClick={exportTranscriptToPDF}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-black text-[10px] flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-md"
-                >
-                  <Printer size={14} /> {lang === 'ar' ? 'تصدير النقاش PDF' : 'Export Discussion PDF'}
-                </button>
-              )}
-           </div>
-           <div className="flex-1 overflow-y-auto p-10 space-y-6 custom-scrollbar bg-slate-50/20">
+           <div className="flex-1 overflow-y-auto p-10 space-y-6 custom-scrollbar">
               {transcript.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center opacity-30 text-center space-y-4">
                   <Radio size={80} className="text-indigo-400 animate-pulse" />
-                  <h4 className="text-xl font-black">{lang === 'ar' ? 'المساعد بانتظار أوامرك' : 'Assistant waiting'}</h4>
-                  <p className="text-xs max-w-xs">{lang === 'ar' ? 'ارفع ملفك ثم ابدأ الحوار الصوتي أو ولد شرحاً مرئياً.' : 'Upload file and start discussion or video.'}</p>
+                  <h4 className="text-xl font-black">{lang === 'ar' ? 'المساعد بانتظار أوامرك' : 'Assistant is waiting'}</h4>
+                  <p className="text-xs max-w-xs">{lang === 'ar' ? 'ارفع ملفك ثم اختر نوع الشرح (صوتي أو مرئي) لتبدأ المعالجة الحقيقية.' : 'Upload file and choose explanation type.'}</p>
                 </div>
               )}
               {transcript.map((m, i) => (
                 <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2`}>
-                   <div className={`max-w-[85%] p-6 rounded-[2.5rem] text-sm font-bold leading-relaxed shadow-sm ${m.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white dark:bg-slate-800 dark:text-white rounded-bl-none border border-indigo-50/20'}`}>
+                   <div className={`max-w-[85%] p-6 rounded-[2.5rem] text-sm font-bold leading-relaxed shadow-sm ${m.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-slate-50 dark:bg-slate-800 dark:text-white rounded-bl-none border border-indigo-50/20'}`}>
                      {m.text}
                    </div>
                 </div>
@@ -656,8 +576,9 @@ ${lectureText.substring(0, 12000)}`,
            </div>
         </div>
 
+        {/* Video Visualizer Panel */}
         <div className="lg:col-span-5 flex flex-col gap-6 overflow-hidden">
-           <div className="flex-1 bg-slate-950 rounded-[3.5rem] p-8 flex flex-col items-center justify-center relative overflow-hidden group border-4 border-indigo-600/20 shadow-2xl">
+           <div className="flex-1 bg-slate-950 rounded-[3.5rem] p-8 flex flex-col items-center justify-center relative overflow-hidden group border-4 border-indigo-600/20 shadow-2xl shadow-indigo-500/10">
               <button onClick={() => setShowVideoHelp(true)} className="absolute top-8 left-8 p-3 bg-white/10 hover:bg-white/20 text-white rounded-2xl backdrop-blur-md z-20 transition-all"><Info size={20} /></button>
               
               {videoUrl && (
@@ -666,19 +587,19 @@ ${lectureText.substring(0, 12000)}`,
                   className="absolute bottom-8 right-8 p-4 bg-emerald-600 text-white rounded-2xl shadow-2xl hover:scale-110 transition-all z-30 flex items-center gap-2 animate-in zoom-in"
                 >
                   <Download size={20} />
-                  <span className="font-black text-xs">{lang === 'ar' ? 'تحميل MP4' : 'Download MP4'}</span>
+                  <span className="font-black text-xs">{lang === 'ar' ? 'تحميل فيديو MP4' : 'Download MP4'}</span>
                 </button>
               )}
 
               {isVideoLoading ? (
                 <div className="text-center space-y-8 z-10 w-full px-10">
                    <div className="relative">
-                      <div className="w-28 h-28 border-8 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mx-auto shadow-2xl"></div>
+                      <div className="w-28 h-28 border-8 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mx-auto shadow-2xl shadow-indigo-500/30"></div>
                       <Film className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-400 animate-pulse" size={32} />
                    </div>
                    <div className="space-y-4">
                       <p className="text-white font-black text-xl animate-pulse">{videoStatus}</p>
-                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden p-0.5 shadow-inner">
+                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden p-0.5">
                          <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-[loading-bar_10s_ease-in-out_infinite] rounded-full"></div>
                       </div>
                       <div className="flex justify-center gap-4 text-slate-500 text-[9px] font-black uppercase tracking-[0.2em]">
@@ -688,29 +609,30 @@ ${lectureText.substring(0, 12000)}`,
                    </div>
                 </div>
               ) : videoUrl ? (
-                <video src={videoUrl} controls autoPlay loop className="w-full h-full object-cover rounded-[2rem] shadow-2xl border-4 border-white/5" />
+                <video src={videoUrl} controls autoPlay loop className="w-full h-full object-cover rounded-[2rem] shadow-2xl" />
               ) : imageData ? (
-                <img src={imageData} className="w-full h-full object-contain rounded-[2.5rem] opacity-60" alt="Preview" />
+                <img src={imageData} className="w-full h-full object-contain rounded-[2rem] opacity-60" alt="Preview" />
               ) : (
-                <div className="text-center space-y-6 opacity-30 group-hover:opacity-50 transition-opacity">
-                   <div className="w-24 h-24 bg-indigo-500/20 rounded-[2rem] flex items-center justify-center mx-auto shadow-inner">
+                <div className="text-center space-y-6 opacity-30">
+                   <div className="w-24 h-24 bg-indigo-500/20 rounded-[2rem] flex items-center justify-center mx-auto">
                       <Monitor size={60} className="text-indigo-400" />
                    </div>
                    <div className="space-y-2">
-                     <h4 className="text-white text-xl font-black">{lang === 'ar' ? 'العرض السينمائي التعليمي' : 'Cinema Visualizer'}</h4>
-                     <p className="text-indigo-400 text-[10px] font-bold uppercase tracking-widest">{lang === 'ar' ? 'حوّل محتواك لمقاطع واقعية مذهلة' : 'Realistic cinematic clips'}</p>
+                     <h4 className="text-white text-xl font-black">{lang === 'ar' ? 'مرسم المحاضرات (MP4)' : 'Lecture Visualizer (MP4)'}</h4>
+                     <p className="text-indigo-400 text-[10px] font-bold uppercase tracking-widest">{lang === 'ar' ? 'حوّل ملفاتك لمقاطع تعليمية واقعية' : 'Turn files into real clips'}</p>
                    </div>
                 </div>
               )}
            </div>
 
+           {/* Content Context Panel */}
            <div className="bg-white dark:bg-slate-900 p-8 rounded-[3.5rem] shadow-xl border dark:border-slate-800">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{lang === 'ar' ? 'محتوى المصدر' : 'Source Content'}</h4>
-                {lectureText && <span className="text-[10px] font-black text-emerald-500">{lectureText.length} حرف</span>}
+                {lectureText && <span className="text-[10px] font-black text-emerald-500">{lectureText.length} حرف تم استخراجها</span>}
               </div>
               <div className="w-full h-32 p-5 bg-slate-50 dark:bg-slate-800 rounded-2xl text-[11px] font-bold overflow-y-auto custom-scrollbar leading-relaxed">
-                {lectureText || (lang === 'ar' ? "في انتظار رفع ملف PDF أو صورة للبدء..." : "Waiting for file ingest...")}
+                {lectureText || (lang === 'ar' ? "في انتظار رفع ملف PDF أو كتابة نص..." : "Waiting for file ingest...")}
               </div>
            </div>
         </div>
