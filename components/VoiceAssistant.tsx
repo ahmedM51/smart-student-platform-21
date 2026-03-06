@@ -103,6 +103,12 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const liveStreamRef = useRef<MediaStream | null>(null);
+  const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const sessionOpenRef = useRef<boolean>(false);
+
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
       const script = document.createElement('script');
@@ -126,6 +132,43 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     } catch {
       // ignore
     }
+
+    sessionOpenRef.current = false;
+
+    try {
+      liveProcessorRef.current?.disconnect();
+    } catch {
+      // ignore
+    }
+    liveProcessorRef.current = null;
+
+    try {
+      liveSourceRef.current?.disconnect();
+    } catch {
+      // ignore
+    }
+    liveSourceRef.current = null;
+
+    try {
+      liveStreamRef.current?.getTracks().forEach(t => t.stop());
+    } catch {
+      // ignore
+    }
+    liveStreamRef.current = null;
+
+    try {
+      inputAudioContextRef.current?.close();
+    } catch {
+      // ignore
+    }
+    inputAudioContextRef.current = null;
+
+    try {
+      audioContextRef.current?.close();
+    } catch {
+      // ignore
+    }
+    audioContextRef.current = null;
 
     try {
       const s = sessionRef.current;
@@ -410,25 +453,47 @@ ${src.substring(0, 20000)}`;
     const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
     const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
     const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    inputAudioContextRef.current = inputCtx;
     audioContextRef.current = outputCtx;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    liveStreamRef.current = stream;
 
     const sessionPromise = ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       callbacks: {
         onopen: () => {
           setIsLive(true);
+          sessionOpenRef.current = true;
           const source = inputCtx.createMediaStreamSource(stream);
           const proc = inputCtx.createScriptProcessor(4096, 1, 1);
+          liveSourceRef.current = source;
+          liveProcessorRef.current = proc;
           proc.onaudioprocess = (e) => {
+            if (!sessionOpenRef.current) return;
             const data = e.inputBuffer.getChannelData(0);
             const int16 = new Int16Array(data.length);
             for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
-            sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } }));
+            sessionPromise
+              .then((s) => {
+                if (!sessionOpenRef.current) return;
+                return s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } });
+              })
+              .catch(() => {
+                // ignore
+              });
           };
           source.connect(proc);
           proc.connect(inputCtx.destination);
-          if (imageData) sessionPromise.then(s => s.sendRealtimeInput({ media: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }));
+          if (imageData) {
+            sessionPromise
+              .then((s) => {
+                if (!sessionOpenRef.current) return;
+                return s.sendRealtimeInput({ media: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } });
+              })
+              .catch(() => {
+                // ignore
+              });
+          }
         },
         onmessage: async (msg: LiveServerMessage) => {
           // Defensive code: see lint context (TS18048) - we use our safe helpers.
@@ -463,8 +528,8 @@ ${src.substring(0, 20000)}`;
           }
           if (msg.serverContent && msg.serverContent.interrupted) stopAllAudio();
         },
-        onclose: () => setIsLive(false),
-        onerror: () => setIsLive(false)
+        onclose: () => { stopLiveSession(); },
+        onerror: () => { stopLiveSession(); }
       },
       config: {
         responseModalities: [Modality.AUDIO],
@@ -600,7 +665,7 @@ ${part}
               <label className="p-4 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white rounded-2xl cursor-pointer transition-all border dark:border-slate-700">
                  <Upload size={24} /><input type="file" className="hidden" accept=".pdf,.txt,image/*" onChange={handleFileUpload} />
               </label>
-              <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
+              <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData) || (isDigestLoading && !imageData && lectureText.length > 20000)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
                 {isAudioSummaryLoading ? <Loader2 className="animate-spin" size={20} /> : <Headphones size={20} />}
                 {lang === 'ar' ? 'بودكاست الشرح' : 'Audio Podcast'}
               </button>
