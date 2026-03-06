@@ -129,6 +129,32 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
 
+  const printHtmlInHiddenIframe = (html: string) => {
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.srcdoc = html;
+
+    const cleanup = () => {
+      try { iframe.remove(); } catch { /* ignore */ }
+    };
+
+    iframe.onload = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } finally {
+        window.setTimeout(cleanup, 1500);
+      }
+    };
+
+    document.body.appendChild(iframe);
+  };
+
   const printConversation = () => {
     const title = lang === 'ar' ? 'محادثة: تحدث مع الملف' : 'Conversation: Talk to File';
     const fileLabel = fileType ? (lang === 'ar' ? `الملف: ${fileType}` : `File: ${fileType}`) : '';
@@ -190,16 +216,69 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       </html>
     `;
 
-    const w = window.open('', '_blank', 'noopener,noreferrer');
-    if (!w) {
-      alert(lang === 'ar'
-        ? 'تعذر فتح نافذة الطباعة. تأكد من السماح بالنوافذ المنبثقة (Popups).'
-        : 'Could not open print window. Please allow popups.');
+    printHtmlInHiddenIframe(html);
+  };
+
+  const printUploadedFile = () => {
+    const title = lang === 'ar' ? 'طباعة الملف المرفوع' : 'Print Uploaded File';
+    const now = new Date();
+    const dateLabel = `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`;
+
+    if (fileType === 'pdf') {
+      printPdf();
       return;
     }
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
+
+    if (fileType === 'image' && imageData) {
+      const html = `
+        <!doctype html>
+        <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>${escapeHtml(title)}</title>
+            <style>
+              @page { margin: 16mm; }
+              body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif; color: #0f172a; }
+              .meta { font-size: 12px; color: #475569; margin-bottom: 12px; }
+              img { max-width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 12px; }
+            </style>
+          </head>
+          <body>
+            <div class="meta">${escapeHtml(dateLabel)}</div>
+            <img src="${imageData}" alt="uploaded" />
+            <script>setTimeout(() => window.print(), 50);</script>
+          </body>
+        </html>
+      `;
+      printHtmlInHiddenIframe(html);
+      return;
+    }
+
+    const text = (lectureText || '').trim();
+    const safe = escapeHtml(text);
+    const html = `
+      <!doctype html>
+      <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${escapeHtml(title)}</title>
+          <style>
+            @page { margin: 16mm; }
+            body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif; color: #0f172a; }
+            .meta { font-size: 12px; color: #475569; margin-bottom: 12px; }
+            pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="meta">${escapeHtml(dateLabel)}</div>
+          <pre>${safe || escapeHtml(lang === 'ar' ? 'لا يوجد نص لطباعته.' : 'No text to print.')}</pre>
+          <script>setTimeout(() => window.print(), 50);</script>
+        </body>
+      </html>
+    `;
+    printHtmlInHiddenIframe(html);
   };
 
   useEffect(() => {
@@ -828,6 +907,9 @@ ${part}
                   <Printer size={20} /> {lang === 'ar' ? 'طباعة PDF' : 'Print PDF'}
                 </button>
               ) : null}
+              <button onClick={printUploadedFile} disabled={!fileType || (fileType === 'pdf' ? !pdfObjectUrl : fileType === 'image' ? !imageData : !lectureText)} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
+                <Printer size={20} /> {lang === 'ar' ? 'طباعة الملف' : 'Print File'}
+              </button>
               <button onClick={printConversation} disabled={transcript.length === 0} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
                 <Printer size={20} /> {lang === 'ar' ? 'طباعة المحادثة' : 'Print Chat'}
               </button>
