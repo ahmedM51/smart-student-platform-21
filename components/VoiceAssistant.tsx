@@ -4,7 +4,7 @@ import {
   Upload, Video, Headphones, Download, FileText, 
   X, Image as ImageIcon, Waves, FileAudio, PlayCircle, PauseCircle,
   Radio, Monitor, Info, ShieldAlert, CheckCircle2, Cpu, Film, Beaker,
-  History, ArrowRight, Share2
+  History, ArrowRight, Share2, Printer
 } from 'lucide-react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { generateText, generateWithParts, textToSpeech } from '../services/geminiService';
@@ -79,6 +79,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const [lectureText, setLectureText] = useState('');
   const [fileType, setFileType] = useState<'text' | 'image' | 'pdf' | null>(null);
   const [imageData, setImageData] = useState<string | null>(null);
+  const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<{role: 'user' | 'ai', text: string}[]>([]);
   const [fileLoading, setFileLoading] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -119,6 +120,46 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       document.head.appendChild(script);
     }
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pdfObjectUrl) {
+        try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
+      }
+    };
+  }, [pdfObjectUrl]);
+
+  const printPdf = async () => {
+    if (!pdfObjectUrl) return;
+
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.src = pdfObjectUrl;
+
+      const cleanup = () => {
+        try { iframe.remove(); } catch { /* ignore */ }
+      };
+
+      iframe.onload = () => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } finally {
+          window.setTimeout(cleanup, 1500);
+        }
+      };
+
+      document.body.appendChild(iframe);
+    } catch {
+      window.open(pdfObjectUrl, '_blank');
+    }
+  };
 
   const stopAllAudio = () => {
     audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
@@ -292,6 +333,10 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     setLectureDigest('');
     try {
       if (file.type === 'application/pdf') {
+        if (pdfObjectUrl) {
+          try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
+        }
+        setPdfObjectUrl(URL.createObjectURL(file));
         const pdfjs = (window as any).pdfjsLib;
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
@@ -299,13 +344,27 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const content = await page.getTextContent();
-          text += content.items.map((it: any) => it.str).join(' ') + '\n';
+          const pageText = (content.items || [])
+            .map((it: any) => {
+              const s = typeof it?.str === 'string' ? it.str : '';
+              const end = it?.hasEOL ? '\n' : ' ';
+              return s + end;
+            })
+            .join('')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/[ \t]{2,}/g, ' ')
+            .trim();
+          text += pageText + '\n\n';
         }
         setLectureText(text);
         setFileType('pdf');
         setImageData(null);
         buildLectureDigest(text);
       } else if (file.type.startsWith('image/')) {
+        if (pdfObjectUrl) {
+          try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
+        }
+        setPdfObjectUrl(null);
         const reader = new FileReader();
         reader.onload = (ev) => {
           setImageData(ev.target?.result as string);
@@ -315,6 +374,10 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         };
         reader.readAsDataURL(file);
       } else {
+        if (pdfObjectUrl) {
+          try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
+        }
+        setPdfObjectUrl(null);
         const text = await file.text();
         setLectureText(text);
         setFileType('text');
@@ -679,6 +742,11 @@ ${part}
               <label className="p-4 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white rounded-2xl cursor-pointer transition-all border dark:border-slate-700">
                  <Upload size={24} /><input type="file" className="hidden" accept=".pdf,.txt,image/*" onChange={handleFileUpload} />
               </label>
+              {fileType === 'pdf' && pdfObjectUrl ? (
+                <button onClick={printPdf} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all">
+                  <Printer size={20} /> {lang === 'ar' ? 'طباعة PDF' : 'Print PDF'}
+                </button>
+              ) : null}
               <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData) || (isDigestLoading && !imageData && lectureText.length > 20000)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
                 {isAudioSummaryLoading ? <Loader2 className="animate-spin" size={20} /> : <Headphones size={20} />}
                 {lang === 'ar' ? 'بودكاست الشرح' : 'Audio Podcast'}
