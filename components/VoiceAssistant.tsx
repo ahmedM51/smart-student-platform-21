@@ -7,6 +7,7 @@ import {
   History, ArrowRight, Share2
 } from 'lucide-react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
+import { generateText, generateWithParts, textToSpeech } from '../services/geminiService';
 
 // --- Audio & File Helpers ---
 function encode(bytes: Uint8Array) {
@@ -117,6 +118,84 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
     audioSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
+  };
+
+  const stopLiveSession = async () => {
+    try {
+      stopAllAudio();
+    } catch {
+      // ignore
+    }
+
+    try {
+      const s = sessionRef.current;
+      if (s && typeof s.close === 'function') s.close();
+    } catch {
+      // ignore
+    }
+
+    sessionRef.current = null;
+    setIsLive(false);
+  };
+
+  const userBufferRef = useRef<string>('');
+  const aiBufferRef = useRef<string>('');
+  const userFlushTimerRef = useRef<number | null>(null);
+  const aiFlushTimerRef = useRef<number | null>(null);
+
+  const flushBufferLines = (role: 'user' | 'ai') => {
+    const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
+    const raw = String(bufferRef.current || '');
+    if (!raw.trim()) return;
+
+    const parts = raw.split(/\n+/);
+    if (parts.length <= 1) return;
+
+    const completeLines = parts.slice(0, -1).map(s => s.trim()).filter(Boolean);
+    const remainder = parts[parts.length - 1] || '';
+    bufferRef.current = remainder;
+
+    if (completeLines.length === 0) return;
+    setTranscript(prev => [...prev, ...completeLines.map((t) => ({ role, text: t }))]);
+  };
+
+  const maybeFlushSentence = (role: 'user' | 'ai') => {
+    const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
+    const text = String(bufferRef.current || '');
+
+    const firstEndIdx = text.search(/[\.\!\?\u061F\u061B\n]/);
+    if (firstEndIdx < 0) return;
+
+    const endChar = text[firstEndIdx];
+    const sliceEnd = endChar === '\n' ? firstEndIdx : firstEndIdx + 1;
+    const firstSentence = text.slice(0, sliceEnd).trim();
+    const rest = text.slice(sliceEnd).trimStart();
+    if (!firstSentence) return;
+
+    bufferRef.current = rest;
+    setTranscript(prev => [...prev, { role, text: firstSentence }]);
+  };
+
+  const flushRemainingAsLine = (role: 'user' | 'ai') => {
+    const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
+    const raw = String(bufferRef.current || '').trim();
+    if (!raw) return;
+    bufferRef.current = '';
+    setTranscript(prev => [...prev, { role, text: raw }]);
+  };
+
+  const scheduleFlush = (role: 'user' | 'ai') => {
+    const timerRef = role === 'user' ? userFlushTimerRef : aiFlushTimerRef;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      try {
+        flushBufferLines(role);
+        maybeFlushSentence(role);
+        flushRemainingAsLine(role);
+      } catch {
+        // ignore
+      }
+    }, 700);
   };
 
   // --- Begin Defensive Transcript Handlers Patch (TS18048) ---
@@ -369,18 +448,18 @@ ${src.substring(0, 20000)}`;
           // Defensive: check user transcription via helper
           const userText = getUserTranscriptText(msg);
           if (typeof userText === "string") {
-            setTranscript(p => [
-              ...p,
-              { role: 'user', text: userText }
-            ]);
+            userBufferRef.current = (userBufferRef.current + (userBufferRef.current ? ' ' : '') + userText);
+            flushBufferLines('user');
+            maybeFlushSentence('user');
+            scheduleFlush('user');
           }
           // Defensive: check ai transcription via helper
           const aiText = getAiTranscriptText(msg);
           if (typeof aiText === "string") {
-            setTranscript(p => [
-              ...p,
-              { role: 'ai', text: aiText }
-            ]);
+            aiBufferRef.current = (aiBufferRef.current + (aiBufferRef.current ? ' ' : '') + aiText);
+            flushBufferLines('ai');
+            maybeFlushSentence('ai');
+            scheduleFlush('ai');
           }
           if (msg.serverContent && msg.serverContent.interrupted) stopAllAudio();
         },
@@ -530,7 +609,7 @@ ${part}
               </button>
            </div>
         </div>
-        <button onClick={() => isLive ? sessionRef.current?.close() : startLiveSession()} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
+        <button onClick={() => isLive ? stopLiveSession() : startLiveSession()} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
            <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية للمحتوى' : 'Audio discussion')}</p></div>
            {isLive ? <Waves className="absolute -bottom-4 -left-4 opacity-20" size={120} /> : <Mic className="absolute -bottom-4 -left-4 opacity-20" size={100} />}
         </button>
