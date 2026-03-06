@@ -186,6 +186,20 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const userFlushTimerRef = useRef<number | null>(null);
   const aiFlushTimerRef = useRef<number | null>(null);
 
+  const appendTranscriptLine = (role: 'user' | 'ai', line: string) => {
+    const t = String(line || '').trim();
+    if (!t) return;
+    setTranscript((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.role === role) {
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...last, text: `${last.text}\n${t}` };
+        return updated;
+      }
+      return [...prev, { role, text: t }];
+    });
+  };
+
   const flushBufferLines = (role: 'user' | 'ai') => {
     const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
     const raw = String(bufferRef.current || '');
@@ -199,7 +213,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     bufferRef.current = remainder;
 
     if (completeLines.length === 0) return;
-    setTranscript(prev => [...prev, ...completeLines.map((t) => ({ role, text: t }))]);
+    completeLines.forEach((t) => appendTranscriptLine(role, t));
   };
 
   const maybeFlushSentence = (role: 'user' | 'ai') => {
@@ -216,7 +230,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     if (!firstSentence) return;
 
     bufferRef.current = rest;
-    setTranscript(prev => [...prev, { role, text: firstSentence }]);
+    appendTranscriptLine(role, firstSentence);
   };
 
   const flushRemainingAsLine = (role: 'user' | 'ai') => {
@@ -224,7 +238,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     const raw = String(bufferRef.current || '').trim();
     if (!raw) return;
     bufferRef.current = '';
-    setTranscript(prev => [...prev, { role, text: raw }]);
+    appendTranscriptLine(role, raw);
   };
 
   const scheduleFlush = (role: 'user' | 'ai') => {
