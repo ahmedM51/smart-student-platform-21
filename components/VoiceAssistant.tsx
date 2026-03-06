@@ -317,7 +317,33 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 
       document.body.appendChild(iframe);
     } catch {
-      window.open(pdfObjectUrl, '_blank');
+      try {
+        const title = lang === 'ar' ? 'طباعة PDF' : 'Print PDF';
+        const html = `
+          <!doctype html>
+          <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+            <head>
+              <meta charset="utf-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <title>${escapeHtml(title)}</title>
+              <style>
+                @page { margin: 16mm; }
+                body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif; }
+                iframe { width: 100vw; height: 100vh; border: 0; }
+              </style>
+            </head>
+            <body>
+              <iframe src="${pdfObjectUrl}"></iframe>
+              <script>setTimeout(() => window.print(), 300);</script>
+            </body>
+          </html>
+        `;
+        printHtmlInHiddenIframe(html);
+      } catch {
+        alert(lang === 'ar'
+          ? 'تعذر بدء طباعة ملف PDF على هذا المتصفح. جرّب تنزيل الملف ثم طباعته من جهازك.'
+          : 'Could not start PDF printing in this browser. Try downloading the file and printing locally.');
+      }
     }
   };
 
