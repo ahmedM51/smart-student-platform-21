@@ -5,6 +5,7 @@ export interface User {
   full_name: string;
   xp: number;
   subjects_count: number;
+  role?: 'admin' | 'user';
 }
 
 export interface Lecture {
@@ -15,6 +16,7 @@ export interface Lecture {
   date: string;
   isCompleted: boolean;
   notes?: string;
+  is_platform?: boolean;
 }
 
 export interface Subject {
@@ -25,6 +27,7 @@ export interface Subject {
   lectures: Lecture[];
   category?: string;
   priority?: 'low' | 'medium' | 'high';
+  is_platform?: boolean;
 }
 
 export interface Task {
@@ -64,11 +67,14 @@ export interface StudyStats {
 
 export interface QuizQuestion {
   id: string;
-  type: 'multiple' | 'boolean' | 'short' | 'matching';
+  type: 'multiple' | 'boolean' | 'short' | 'matching' | 'essay';
   question: string;
   options?: string[];
   correctAnswer: any;
   explanation: string;
+  maxScore?: number;
+  rubric?: string[];
+  modelAnswer?: string;
 }
 
 export interface QuizSettings {

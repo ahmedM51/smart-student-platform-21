@@ -47,6 +47,7 @@ const getSafeSession = async () => {
 let subjectsCache: Subject[] | null = null;
 let tasksCache: Task[] | null = null;
 let notesCache: Note[] | null = null;
+let roleCache: 'admin' | 'user' | null = null;
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> => {
   let timeoutId: any;
@@ -107,6 +108,24 @@ const addXP = async (amount: number) => {
 
 export const db = {
   getSafeSession,
+  getRole: async (): Promise<'admin' | 'user'> => {
+    if (roleCache) return roleCache;
+    try {
+      const session = await getSafeSession();
+      const user = session?.user;
+      if (!user) return 'user';
+
+      const { data } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+      const r = data?.role === 'admin' ? 'admin' : 'user';
+      roleCache = r;
+      return r;
+    } catch {
+      return 'user';
+    }
+  },
+  isAdmin: async (): Promise<boolean> => {
+    return (await db.getRole()) === 'admin';
+  },
   getUser: async (): Promise<User | null> => {
     try {
       const session = await getSafeSession();
@@ -137,12 +156,15 @@ export const db = {
 
       if (!profile) return null;
 
+      const role = profile?.role === 'admin' ? 'admin' : 'user';
+      roleCache = role;
       return {
         id: user.id,
         email: user.email || '',
         full_name: profile.full_name,
         xp: profile.xp,
-        subjects_count: 0
+        subjects_count: 0,
+        role
       };
     } catch (e) {
       console.error("getUser Exception:", e);
@@ -158,9 +180,10 @@ export const db = {
     subjectsCache = null;
     tasksCache = null;
     notesCache = null;
+    roleCache = null;
   },
-  getSubjects: async (): Promise<Subject[]> => {
-    if (subjectsCache) return subjectsCache;
+  getSubjects: async (scope: 'personal' | 'platform' | 'all' = 'personal'): Promise<Subject[]> => {
+    if (subjectsCache && scope === 'personal') return subjectsCache;
     const localData = JSON.parse(localStorage.getItem('local_subjects') || '[]');
     
     try {
@@ -168,11 +191,16 @@ export const db = {
       if (!session) return localData;
       
       const user = session.user;
-      const query = supabase
+      const base = supabase
         .from('subjects')
         .select(`*, lectures (*)`)
-        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
+
+      const query = scope === 'platform'
+        ? base.eq('is_platform', true)
+        : scope === 'all'
+          ? base.or(`and(is_platform.eq.true),and(is_platform.eq.false,user_id.eq.${user.id})`)
+          : base.eq('user_id', user.id).eq('is_platform', false);
       
       const { data: subjects, error } = await withTimeout(query as any, 5000, { data: null, error: { code: 'TIMEOUT' } }) as any;
       
@@ -185,12 +213,14 @@ export const db = {
         ...s,
         lectures: (s.lectures || []).map((l: any) => ({
           ...l,
-          isCompleted: l.is_completed
-        }))
+          isCompleted: l.is_completed,
+        })),
       })) as Subject[];
-      
-      subjectsCache = mapped;
-      localStorage.setItem('local_subjects', JSON.stringify(mapped));
+
+      if (scope === 'personal') {
+        subjectsCache = mapped;
+        localStorage.setItem('local_subjects', JSON.stringify(mapped));
+      }
       return mapped;
     } catch (e) {
       console.error("getSubjects Critical Error:", e);
@@ -201,12 +231,25 @@ export const db = {
     const localData = JSON.parse(localStorage.getItem('local_subjects') || '[]');
     const tempId = Date.now();
     const newSub = { id: tempId, name: sub.name, color: sub.color, lectures: [], progress: 0 };
-    
+
     try {
       const session = await getSafeSession();
       const user = session?.user;
       if (user) {
-        const { error } = await supabase.from('subjects').insert([{ name: sub.name, color: sub.color, user_id: user.id }]);
+        const isPlatform = Boolean(sub.is_platform);
+        if (isPlatform && !(await db.isAdmin())) {
+          alert('غير مسموح: فقط الأدمن يمكنه إضافة مواد المنصة.');
+          return db.getSubjects();
+        }
+
+        const { error } = await supabase.from('subjects').insert([
+          {
+            name: sub.name,
+            color: sub.color,
+            user_id: user.id,
+            is_platform: isPlatform,
+          },
+        ]);
         if (!error) {
           subjectsCache = null;
           addXP(50).catch(() => {});
@@ -215,13 +258,18 @@ export const db = {
     } catch (e) {
       console.warn("saveSubject DB error, saved locally only");
     }
-    
-    const updated = [newSub, ...localData];
+
+    const updated = [newSub as any, ...localData];
     localStorage.setItem('local_subjects', JSON.stringify(updated));
     subjectsCache = null;
     return db.getSubjects();
   },
   deleteSubject: async (id: number) => {
+    const { data } = await supabase.from('subjects').select('is_platform').eq('id', id).single();
+    if (data?.is_platform && !(await db.isAdmin())) {
+      alert('غير مسموح: فقط الأدمن يمكنه حذف مواد المنصة.');
+      return db.getSubjects();
+    }
     await supabase.from('subjects').delete().eq('id', id);
     subjectsCache = null; // Invalidate cache
     return db.getSubjects();
@@ -231,6 +279,13 @@ export const db = {
       const session = await getSafeSession();
       const user = session?.user;
       if (!user) return db.getSubjects();
+
+      const { data: subjectRow } = await supabase.from('subjects').select('is_platform').eq('id', subId).single();
+      const isPlatform = Boolean(subjectRow?.is_platform);
+      if (isPlatform && !(await db.isAdmin())) {
+        alert('غير مسموح: فقط الأدمن يمكنه إضافة محاضرات لمواد المنصة.');
+        return db.getSubjects();
+      }
 
       let finalContent = lec.content;
 
@@ -268,6 +323,7 @@ export const db = {
         is_completed: false,
         subject_id: subId, 
         user_id: user.id,
+        is_platform: isPlatform,
         date: new Date().toLocaleDateString('ar-EG')
       }]);
 
@@ -308,11 +364,21 @@ export const db = {
     return db.getSubjects();
   },
   editLecture: async (subId: number, lecId: number, updatedLec: any) => {
+    const { data } = await supabase.from('lectures').select('is_platform').eq('id', lecId).single();
+    if (data?.is_platform && !(await db.isAdmin())) {
+      alert('غير مسموح: فقط الأدمن يمكنه تعديل محاضرات المنصة.');
+      return db.getSubjects();
+    }
     await supabase.from('lectures').update(updatedLec).eq('id', lecId);
     subjectsCache = null; // Invalidate cache
     return db.getSubjects();
   },
   deleteLecture: async (subId: number, lecId: number) => {
+    const { data } = await supabase.from('lectures').select('is_platform').eq('id', lecId).single();
+    if (data?.is_platform && !(await db.isAdmin())) {
+      alert('غير مسموح: فقط الأدمن يمكنه حذف محاضرات المنصة.');
+      return db.getSubjects();
+    }
     await supabase.from('lectures').delete().eq('id', lecId);
     subjectsCache = null; // Invalidate cache
     return db.getSubjects();

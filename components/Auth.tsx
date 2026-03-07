@@ -52,7 +52,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, lang, setLang, isDark, setI
           // Create profile
           const { error: profileError } = await supabase
             .from('profiles')
-            .upsert([{ id: data.user.id, full_name: fullName, xp: 100 }], { onConflict: 'id' });
+            .upsert([{ id: data.user.id, full_name: fullName, xp: 100, role: 'user' }], { onConflict: 'id' });
           
           if (profileError) console.error('Error creating profile:', profileError);
           
@@ -65,7 +65,8 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, lang, setLang, isDark, setI
                email: data.user.email || '',
                full_name: fullName,
                xp: 100,
-               subjects_count: 0
+               subjects_count: 0,
+               role: 'user'
              });
           } else {
             setError(lang === 'ar' ? "يرجى تفعيل بريدك الإلكتروني أو التحقق من إعدادات Supabase" : "Please confirm your email or check Supabase settings");

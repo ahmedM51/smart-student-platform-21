@@ -21,6 +21,17 @@ export const TakeQuiz: React.FC<{ quizId: string, lang: 'ar' | 'en' }> = ({ quiz
   const [startTime, setStartTime] = useState(0);
   const [score, setScore] = useState(0);
 
+  const getObjectiveTotal = () => {
+    const qs = quiz?.questions || [];
+    return qs.reduce((acc, q) => acc + (q.type === 'essay' ? 0 : 1), 0);
+  };
+
+  const isAnswered = (q: any) => {
+    const v = answers[q.id];
+    if (q?.type === 'essay') return typeof v === 'string' && v.trim().length > 0;
+    return v !== undefined;
+  };
+
   useEffect(() => {
     const loadQuiz = async () => {
       setLoading(true);
@@ -57,8 +68,11 @@ export const TakeQuiz: React.FC<{ quizId: string, lang: 'ar' | 'en' }> = ({ quiz
     
     let calculatedScore = 0;
     quiz.questions.forEach(q => {
+      if (q.type === 'essay') return;
       if (answers[q.id] === q.correctAnswer) calculatedScore++;
     });
+
+    const objectiveTotal = quiz.questions.reduce((acc, q) => acc + (q.type === 'essay' ? 0 : 1), 0);
 
     const response: QuizResponse = {
       id: 'res_' + Math.random().toString(36).substr(2, 9),
@@ -67,7 +81,7 @@ export const TakeQuiz: React.FC<{ quizId: string, lang: 'ar' | 'en' }> = ({ quiz
       groupCode: studentInfo.group,
       answers,
       score: calculatedScore,
-      totalQuestions: quiz.questions.length,
+      totalQuestions: objectiveTotal,
       submittedAt: new Date().toISOString(),
       timeSpent: (Date.now() - startTime) / 1000,
       deviceInfo: navigator.userAgent
@@ -165,28 +179,43 @@ export const TakeQuiz: React.FC<{ quizId: string, lang: 'ar' | 'en' }> = ({ quiz
                 </div>
 
                 <div className="bg-white dark:bg-slate-900 p-12 rounded-[4rem] shadow-2xl border-4 border-white/5 relative min-h-[400px] flex flex-col justify-center">
-                   <h2 className="text-3xl font-black dark:text-white text-center leading-relaxed mb-12 px-6">{currentQuestion.question}</h2>
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {currentQuestion.options?.map((opt, i) => (
-                        <button 
-                          key={i} 
-                          onClick={() => setAnswers({...answers, [currentQuestion.id]: i})}
-                          className={`p-8 rounded-[3rem] text-right font-black text-lg transition-all border-4 flex items-center gap-6 group shadow-lg ${answers[currentQuestion.id] === i ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-900 dark:text-indigo-100 scale-[1.02]' : 'border-white dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-indigo-100 text-slate-600 dark:text-slate-400'}`}
-                        >
-                           <div className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center shrink-0 font-black shadow-inner transition-colors ${answers[currentQuestion.id] === i ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 dark:bg-slate-700 text-slate-300'}`}>{String.fromCharCode(65 + i)}</div>
-                           <span className="flex-1">{opt}</span>
-                        </button>
-                      ))}
-                   </div>
+                  <h2 className="text-3xl font-black dark:text-white text-center leading-relaxed mb-12 px-6">{currentQuestion.question}</h2>
+                  {currentQuestion.type === 'essay' ? (
+                    <div className="max-w-2xl mx-auto w-full">
+                      <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-900/30 rounded-3xl p-6 text-right mb-6">
+                        <div className="text-xs font-black text-indigo-700 mb-2">{lang === 'ar' ? 'إرشادات' : 'Guidance'}</div>
+                        <div className="text-sm font-bold text-slate-700 dark:text-slate-200 leading-relaxed whitespace-pre-wrap">{currentQuestion.explanation}</div>
+                      </div>
+                      <textarea
+                        value={typeof answers[currentQuestion.id] === 'string' ? answers[currentQuestion.id] : ''}
+                        onChange={(e) => setAnswers({ ...answers, [currentQuestion.id]: e.target.value })}
+                        className="w-full min-h-[220px] p-6 bg-white dark:bg-slate-900 rounded-3xl border-2 border-slate-100 dark:border-slate-800 shadow-sm text-right font-bold dark:text-white"
+                        placeholder={lang === 'ar' ? 'اكتب إجابتك هنا...' : 'Write your answer here...'}
+                      />
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                       {currentQuestion.options?.map((opt, i) => (
+                         <button 
+                           key={i} 
+                           onClick={() => setAnswers({...answers, [currentQuestion.id]: i})}
+                           className={`p-8 rounded-[3rem] text-right font-black text-lg transition-all border-4 flex items-center gap-6 group shadow-lg ${answers[currentQuestion.id] === i ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-900 dark:text-indigo-100 scale-[1.02]' : 'border-white dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-indigo-100 text-slate-600 dark:text-slate-400'}`}
+                         >
+                            <div className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center shrink-0 font-black shadow-inner transition-colors ${answers[currentQuestion.id] === i ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 dark:bg-slate-700 text-slate-300'}`}>{String.fromCharCode(65 + i)}</div>
+                            <span className="flex-1">{opt}</span>
+                         </button>
+                       ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex justify-between items-center p-8 bg-white dark:bg-slate-900 rounded-[3rem] shadow-xl border border-slate-100 dark:border-slate-800">
                    <button onClick={() => setCurrentIdx(i => Math.max(0, i-1))} disabled={currentIdx === 0} className="px-10 py-5 bg-slate-100 dark:bg-slate-800 dark:text-white rounded-2xl font-black disabled:opacity-20 flex items-center gap-3 transition-all hover:bg-slate-200"><ChevronRight size={20} /> السابق</button>
                    {currentIdx === quiz.questions.length - 1 ? (
-                     <button onClick={handleSubmit} disabled={answers[currentQuestion.id] === undefined} className="px-16 py-5 bg-emerald-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 transition-all">تسليم الاختبار 🏁</button>
-                   ) : (
-                     <button onClick={() => setCurrentIdx(i => i + 1)} disabled={answers[currentQuestion.id] === undefined} className="px-16 py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 transition-all flex items-center gap-3">التالي <ChevronLeft size={20} /></button>
-                   )}
+                    <button onClick={handleSubmit} disabled={!isAnswered(currentQuestion)} className="px-16 py-5 bg-emerald-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 transition-all">تسليم الاختبار 🏁</button>
+                  ) : (
+                    <button onClick={() => setCurrentIdx(i => i + 1)} disabled={!isAnswered(currentQuestion)} className="px-16 py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 transition-all flex items-center gap-3">التالي <ChevronLeft size={20} /></button>
+                  )}
                 </div>
              </div>
           )}
@@ -199,14 +228,14 @@ export const TakeQuiz: React.FC<{ quizId: string, lang: 'ar' | 'en' }> = ({ quiz
                    <p className="text-slate-500 font-bold text-xl uppercase tracking-widest">تم تسليم إجاباتك بنجاح وحساب النتيجة</p>
                 </div>
                 <div className="max-w-md mx-auto bg-slate-50 dark:bg-slate-800/50 p-12 rounded-[3.5rem] shadow-inner border-2 border-indigo-100 dark:border-indigo-900/30">
-                   <p className="text-[12px] font-black text-slate-400 uppercase tracking-widest mb-6">الدرجة النهائية</p>
-                   <div className="flex items-baseline justify-center gap-3">
-                      <span className="text-9xl font-black text-indigo-600">{score}</span>
-                      <span className="text-4xl font-black text-slate-300">/ {quiz?.questions.length}</span>
-                   </div>
-                   <div className="mt-8 pt-8 border-t border-indigo-100 dark:border-indigo-900/20">
-                      <p className="text-xl font-black text-indigo-600">النسبة المئوية: {Math.round((score/(quiz?.questions.length || 1))*100)}%</p>
-                   </div>
+                  <p className="text-[12px] font-black text-slate-400 uppercase tracking-widest mb-6">الدرجة النهائية</p>
+                  <div className="flex items-baseline justify-center gap-3">
+                     <span className="text-9xl font-black text-indigo-600">{score}</span>
+                     <span className="text-4xl font-black text-slate-300">/ {getObjectiveTotal()}</span>
+                  </div>
+                  <div className="mt-8 pt-8 border-t border-indigo-100 dark:border-indigo-900/20">
+                     <p className="text-xl font-black text-indigo-600">النسبة المئوية: {Math.round((score/(getObjectiveTotal() || 1))*100)}%</p>
+                  </div>
                 </div>
                 <div className="flex flex-col gap-4">
                   <button onClick={() => window.location.reload()} className="w-full py-5 bg-indigo-100 text-indigo-600 rounded-3xl font-black hover:bg-indigo-200 transition-all flex items-center justify-center gap-3"><RefreshCcw size={20}/> إعادة المحاولة</button>

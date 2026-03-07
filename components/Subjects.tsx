@@ -57,6 +57,8 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
   const [showAddSubject, setShowAddSubject] = useState(false);
   const [showAddLecture, setShowAddLecture] = useState(false);
+  const [scope, setScope] = useState<'platform' | 'personal'>('platform');
+  const [isAdmin, setIsAdmin] = useState(false);
   
   const [newSubName, setNewSubName] = useState('');
   const [lectureTitle, setLectureTitle] = useState('');
@@ -76,13 +78,16 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
   const safeLectures = selectedSubject && Array.isArray(selectedSubject.lectures) ? selectedSubject.lectures : [];
 
   useEffect(() => {
+    let mounted = true;
     const loadData = async () => {
       setIsLoading(true);
       try {
-        const data = await db.getSubjects();
-        setSubjects(data);
+        const role = await db.getRole().catch(() => 'user' as const);
+        if (mounted) setIsAdmin(role === 'admin');
+        const data = await db.getSubjects(scope);
+        if (mounted) setSubjects(data);
       } finally {
-        setIsLoading(false);
+        if (mounted) setIsLoading(false);
       }
     };
     loadData();
@@ -94,13 +99,14 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
       };
       document.head.appendChild(script);
     }
-  }, []);
+    return () => { mounted = false; };
+  }, [scope]);
 
   const handleAddSubject = async () => {
     if (!newSubName.trim()) return;
     const colors = ['bg-indigo-500', 'bg-rose-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500'];
     const randomColor = colors[Math.floor(Math.random() * colors.length)];
-    const updated = await db.saveSubject({ name: newSubName, color: randomColor });
+    const updated = await db.saveSubject({ name: newSubName, color: randomColor, is_platform: scope === 'platform' });
     setSubjects(updated);
     setNewSubName('');
     setShowAddSubject(false);
@@ -235,6 +241,8 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
   }
 
   if (selectedSubject) {
+    const selectedIsPlatform = Boolean(selectedSubject.is_platform);
+    const canEditSelected = !selectedIsPlatform || isAdmin;
     return (
       <div className={`space-y-10 animate-in fade-in duration-500 pb-20 relative ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
@@ -247,12 +255,12 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
               <p className="text-slate-500 font-bold text-xs uppercase tracking-widest">{selectedSubject.progress}% {lang === 'ar' ? 'مكتمل' : 'Completed'}</p>
             </div>
           </div>
-          <button onClick={() => { setEditingLectureId(null); setLectureTitle(''); setLectureContent(''); setShowAddLecture(true); }} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center gap-3">
+          <button onClick={() => { setEditingLectureId(null); setLectureTitle(''); setLectureContent(''); setShowAddLecture(true); }} disabled={!canEditSelected} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center gap-3 disabled:opacity-40 disabled:hover:scale-100">
             <Plus size={20} /> {t.subjects_lec_add}
           </button>
         </div>
 
-        {showAddLecture && (
+        {showAddLecture && canEditSelected && (
           <div className="bg-white dark:bg-slate-900 p-10 rounded-[3rem] border-2 border-indigo-500/30 shadow-2xl animate-in slide-in-from-top-4 relative z-50">
             <button onClick={() => setShowAddLecture(false)} className={`absolute top-8 ${lang === 'ar' ? 'left-8' : 'right-8'} p-2 text-slate-400 hover:text-rose-500 transition-colors`}>
               <X size={24} />
@@ -366,9 +374,11 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
                 <button onClick={() => openContent(lecture.content)} className="px-6 py-3 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl font-black text-xs hover:bg-indigo-600 hover:text-white transition-all flex items-center gap-2">
                   <ExternalLink size={16} /> {t.subjects_lec_view}
                 </button>
-                <button onClick={() => handleDeleteLecture(lecture.id)} className="w-12 h-12 flex items-center justify-center rounded-xl bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-500 hover:text-white transition-all">
-                  <Trash2 size={18} />
-                </button>
+                {canEditSelected && (
+                  <button onClick={() => handleDeleteLecture(lecture.id)} className="w-12 h-12 flex items-center justify-center rounded-xl bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-500 hover:text-white transition-all">
+                    <Trash2 size={18} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -392,8 +402,23 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
           </h2>
           <p className="text-slate-500 mt-2 font-medium">{t.subjects_subtitle}</p>
         </div>
-        <button onClick={() => setShowAddSubject(true)} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center gap-3">
+        <button onClick={() => setShowAddSubject(true)} disabled={scope === 'platform' && !isAdmin} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center gap-3 disabled:opacity-40 disabled:hover:scale-100">
           <Plus size={24} /> {t.subjects_add_btn}
+        </button>
+      </div>
+
+      <div className="flex items-center gap-3 bg-white dark:bg-slate-900 p-2 rounded-3xl border border-slate-100 dark:border-slate-800 w-fit">
+        <button
+          onClick={() => { setSelectedSubjectId(null); setShowAddLecture(false); setShowAddSubject(false); setScope('platform'); }}
+          className={`px-6 py-3 rounded-2xl font-black text-xs transition-all ${scope === 'platform' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+        >
+          {lang === 'ar' ? 'مواد المنصة' : 'Platform'}
+        </button>
+        <button
+          onClick={() => { setSelectedSubjectId(null); setShowAddLecture(false); setShowAddSubject(false); setScope('personal'); }}
+          className={`px-6 py-3 rounded-2xl font-black text-xs transition-all ${scope === 'personal' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+        >
+          {lang === 'ar' ? 'موادي' : 'My Materials'}
         </button>
       </div>
 
@@ -416,7 +441,9 @@ export const Subjects: React.FC<{ lang: 'ar' | 'en' }> = ({ lang }) => {
               <div className={`w-16 h-16 ${sub.color} rounded-[2rem] flex items-center justify-center text-white shadow-2xl transition-transform group-hover:rotate-6`}>
                 <Book size={32} />
               </div>
-              <button onClick={(e) => handleDeleteSubject(e, sub.id)} className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center hover:bg-rose-500 hover:text-white shadow-sm"><Trash2 size={18} /></button>
+              {(scope === 'personal' || isAdmin) && (
+                <button onClick={(e) => handleDeleteSubject(e, sub.id)} className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center hover:bg-rose-500 hover:text-white shadow-sm"><Trash2 size={18} /></button>
+              )}
             </div>
             <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2">{sub.name}</h3>
             <p className="text-[10px] font-black text-slate-400 uppercase mb-10">{(Array.isArray(sub.lectures) ? sub.lectures.length : 0)} {lang === 'ar' ? 'محاضرات مضافة' : 'Lectures added'}</p>
