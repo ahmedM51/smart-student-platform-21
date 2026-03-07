@@ -7,8 +7,7 @@ import {
   History, Printer, FileText
 } from 'lucide-react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
-import { callAI, generateVideos, getVideosOperation } from '../services/geminiService';
-import { useToast } from '../hooks/useToast';
+import { generateText, textToSpeech } from '../services/geminiService';
 
 // --- Audio & File Helpers ---
 function encode(bytes: Uint8Array) {
@@ -77,7 +76,6 @@ function audioBufferToMp3(buffer: AudioBuffer) {
 
 export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) => {
   const [isLive, setIsLive] = useState(false);
-  const toast = useToast();
   const [lectureText, setLectureText] = useState('');
   const [fileType, setFileType] = useState<'text' | 'image' | 'pdf' | null>(null);
   const [imageData, setImageData] = useState<string | null>(null);
@@ -90,6 +88,12 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
 
   const [isAudioSummaryLoading, setIsAudioSummaryLoading] = useState(false);
   const [summaryAudioUrl, setSummaryAudioUrl] = useState<string | null>(null);
+
+  const platformApiKey =
+    (import.meta as any).env?.VITE_GEMINI_LIVE_API_KEY ||
+    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
+    (import.meta as any).env?.VITE_API_KEY ||
+    '';
 
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -150,7 +154,17 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const content = await page.getTextContent();
-          text += content.items.map((it: any) => it.str).join(' ') + '\n';
+          const pageText = (content.items || [])
+            .map((it: any) => {
+              const s = typeof it?.str === 'string' ? it.str : '';
+              const end = it?.hasEOL ? '\n' : ' ';
+              return s + end;
+            })
+            .join('')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/[ \t]{2,}/g, ' ')
+            .trim();
+          text += pageText + '\n\n';
         }
         setLectureText(text);
         setFileType('pdf');
@@ -180,7 +194,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
       ]);
     } catch (err) { 
       console.error("Upload error:", err);
-      toast.error(lang === 'ar' ? "خطأ في التحميل" : "Upload Error", lang === 'ar' ? "فشل في معالجة الملف المرفوع." : "Failed to process uploaded file.");
+      alert(lang === 'ar' ? "خطأ في التحميل" : "Upload Error");
     } finally { 
       setFileLoading(false); 
     }
@@ -189,7 +203,10 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const exportTranscriptToPDF = () => {
     if (transcript.length === 0) return;
     const printWindow = window.open('', '_blank');
-    if (!printWindow) return toast.warning(lang === 'ar' ? "تنبيه" : "Warning", lang === 'ar' ? "يرجى تفعيل النوافذ المنبثقة." : "Please enable popups.");
+    if (!printWindow) {
+      alert(lang === 'ar' ? "يرجى تفعيل النوافذ المنبثقة (Popups)." : "Please enable popups.");
+      return;
+    }
 
     const contentHtml = transcript.map((m) => `
       <div style="margin-bottom: 20px; padding: 15px; border-radius: 15px; background: ${m.role === 'user' ? '#f0f4ff' : '#f0fff4'}; border: 1px solid ${m.role === 'user' ? '#dce3f1' : '#dcf1dc'};">
@@ -235,7 +252,7 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   };
 
   const generateAudioSummary = async () => {
-    if (!lectureText && !imageData) return toast.warning(lang === 'ar' ? "تنبيه" : "Warning", lang === 'ar' ? "يرجى رفع ملف أولاً." : "Please upload a file first.");
+    if (!lectureText && !imageData) return alert(lang === 'ar' ? "يرجى رفع ملف أولاً." : "Please upload a file first.");
     setIsAudioSummaryLoading(true);
     setSummaryAudioUrl(null);
     try {
@@ -243,39 +260,32 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         ? "أعطني شرحاً صوتياً مفصلاً جداً لهذه الصورة وكأنك معلم يشرح لطلابه بأسلوب قصصي ممتع."
         : `قم بإنشاء شرح صوتي كامل ومفصل جداً بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. المحتوى:\n${lectureText.substring(0, 15000)}`;
 
-      const textRes = await callAI('gemini-3-flash-preview', imageData 
-          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: prompt }] } 
-          : { parts: [{ text: prompt }] } 
-      );
+      const srcPrompt = imageData
+        ? prompt
+        : `${prompt}`;
 
-      const summaryText = textRes.text || "";
-      const ttsRes = await callAI("gemini-2.5-flash-preview-tts", [{ parts: [{ text: `اقرأ هذا الشرح بأسلوب تفاعلي: ${summaryText}` }] }], { 
-          responseModalities: ["AUDIO"], 
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } } 
-      });
-
-      const audioBase64: string | undefined = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      const summaryText = (await generateText(srcPrompt, { model: 'gemini-3-flash-preview' })) || '';
+      const audioBase64 = await textToSpeech(`اقرأ هذا الشرح بأسلوب تفاعلي: ${summaryText}`, 'Kore');
       if (typeof audioBase64 === "string") {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
         const audioBuffer = await decodeAudioData(decode(audioBase64), ctx, 24000, 1);
         const mp3Blob = audioBufferToMp3(audioBuffer);
         setSummaryAudioUrl(URL.createObjectURL(mp3Blob));
-        toast.success(lang === 'ar' ? "تم التلخيص" : "Summary Generated", lang === 'ar' ? "تم توليد الشرح الصوتي بنجاح." : "Audio summary generated successfully.");
       }
     } catch (e) { 
       console.error("Audio summary error:", e);
-      toast.error(lang === 'ar' ? "خطأ" : "Error", lang === 'ar' ? "فشل توليد التلخيص الصوتي." : "Failed to generate audio summary."); 
+      alert(lang === 'ar' ? "فشل توليد التلخيص الصوتي." : "Failed to generate audio summary.");
     } finally { 
       setIsAudioSummaryLoading(false); 
     }
   };
 
   const generateSmartVideo = async () => {
-    if (!lectureText && !imageData) return toast.warning(lang === 'ar' ? "تنبيه" : "Warning", lang === 'ar' ? "يرجى رفع ملف (PDF أو صورة) أولاً ليتمكن الذكاء الاصطناعي من تحليله وتوليد الفيديو." : "Please upload a file first.");
+    if (!lectureText && !imageData) return alert(lang === 'ar' ? "يرجى رفع ملف (PDF أو صورة) أولاً ليتمكن الذكاء الاصطناعي من تحليله وتوليد الفيديو." : "Please upload a file first.");
     
     const aistudio = (window as any).aistudio;
     if (aistudio && !await aistudio.hasSelectedApiKey()) {
-      toast.info(lang === 'ar' ? "مطلوب مفتاح API" : "API Key Required", lang === 'ar' ? "توليد الفيديو يتطلب اختيار مفتاح API مدفوع (Paid). سيتم فتح نافذة الاختيار الآن." : "Video generation requires a paid API key. Opening selection window.");
+      alert(lang === 'ar' ? "توليد الفيديو يتطلب اختيار مفتاح API مدفوع (Paid). سيتم فتح نافذة الاختيار الآن." : "Video generation requires a paid API key. Opening selection window.");
       await aistudio.openSelectKey();
       return; 
     }
@@ -284,16 +294,26 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     setVideoStatus(lang === 'ar' ? 'جاري استيعاب محتوى ملفك...' : 'Ingesting your file...');
     
     try {
+      if (!String(platformApiKey || '').trim()) {
+        alert(lang === 'ar'
+          ? 'مفتاح المنصة غير مضبوط. أضف VITE_GEMINI_API_KEY أو VITE_API_KEY.'
+          : 'Missing platform API key. Set VITE_GEMINI_API_KEY / VITE_API_KEY.');
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
       const analysisPrompt = imageData 
         ? "Analyze this image and create a highly detailed cinematic prompt for a 5-second educational video explaining its core concept. Describe motion, lighting, and camera work. Respond only with the English prompt."
         : `Summarize the following lecture into a cinematic visual prompt for a 5-second video that explains the main concept visually. Use descriptive artistic language. 
            Content: ${lectureText.substring(0, 2000)}
            Respond only with the English prompt.`;
 
-      const analysisRes = await callAI('gemini-3-flash-preview', imageData 
-          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: analysisPrompt }] } 
-          : { parts: [{ text: analysisPrompt }] } 
-      );
+      const analysisRes = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: imageData
+          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: analysisPrompt }] }
+          : { parts: [{ text: analysisPrompt }] },
+      });
 
       const visualPrompt: string = analysisRes.text || "Scientific visualization of lecture content";
       setVideoStatus(lang === 'ar' ? 'جاري تصميم المشاهد السينمائية...' : 'Designing cinematic scenes...');
@@ -304,37 +324,40 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         aspectRatio: '16:9' 
       };
 
-      let imageParam: any = null;
+      const videoReq: any = {
+        model: 'veo-3.1-fast-generate-preview',
+        prompt: visualPrompt,
+        config: videoConfig,
+      };
       if (imageData) {
-        imageParam = {
+        videoReq.image = {
           imageBytes: imageData.split(',')[1],
-          mimeType: 'image/jpeg'
+          mimeType: 'image/jpeg',
         };
       }
 
-      let operation = await generateVideos('veo-3.1-fast-generate-preview', visualPrompt, videoConfig, imageParam);
+      let operation = await ai.models.generateVideos(videoReq);
 
       setVideoStatus(lang === 'ar' ? 'جاري الرندرة الحقيقية (قد يستغرق 3-5 دقائق)...' : 'Rendering real video (takes 3-5 mins)...');
 
       while (!operation.done) {
         await new Promise(r => setTimeout(r, 10000));
-        operation = await getVideosOperation(operation);
+        operation = await ai.operations.getVideosOperation({ operation });
       }
 
       setVideoStatus(lang === 'ar' ? 'تجهيز ملف MP4 للتحميل...' : 'Preparing MP4 for download...');
 
       const downloadLink: string | undefined = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (typeof downloadLink === "string") {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const response = await fetch(`${downloadLink}&key=${encodeURIComponent(String(platformApiKey || '').trim())}`);
         const blob = await response.blob();
         setVideoUrl(URL.createObjectURL(blob));
       }
     } catch (e: any) {
       console.error(e);
-      toast.error(
-        lang === 'ar' ? "فشل توليد الفيديو" : "Video Generation Failed",
-        lang === 'ar' ? "فشل توليد الفيديو. تأكد من استهلاكك للـ Quota أو صلاحية المفتاح." : "Failed to generate video. Check your quota or API key validity."
-      );
+      alert(lang === 'ar'
+        ? "فشل توليد الفيديو. تأكد من استهلاكك للـ Quota أو صلاحية المفتاح."
+        : "Failed to generate video. Check your quota or API key validity.");
     } finally {
       setIsVideoLoading(false);
     }
@@ -361,8 +384,14 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         return;
     }
 
-    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-    const ai = new GoogleGenAI({ apiKey });
+    if (!String(platformApiKey || '').trim()) {
+      alert(lang === 'ar'
+        ? 'مفتاح المنصة غير مضبوط. أضف VITE_GEMINI_LIVE_API_KEY أو VITE_GEMINI_API_KEY أو VITE_API_KEY.'
+        : 'Missing platform API key. Set VITE_GEMINI_LIVE_API_KEY / VITE_GEMINI_API_KEY / VITE_API_KEY.');
+      return;
+    }
+
+    const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
     const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
     const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
     audioContextRef.current = outputCtx;
