@@ -15,11 +15,14 @@ import { generateText, generateImage } from '../services/geminiService';
 
 interface InternalQuestion {
   id: string;
-  type: 'multiple' | 'boolean' | 'short';
+  type: 'multiple' | 'boolean' | 'short' | 'essay';
   question: string;
   options: string[];
   correctAnswer: number;
   explanation: string;
+  maxScore?: number;
+  rubric?: string[];
+  modelAnswer?: string;
 }
 
 interface Flashcard {
@@ -100,13 +103,17 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
     title: lang === 'ar' ? 'اختبار مراجعة ذكي' : 'Smart Revision Quiz',
     count: 10,
     timeLimit: 15,
-    type: 'mixed' as 'multiple' | 'boolean' | 'mixed'
+    type: 'mixed' as 'multiple' | 'boolean' | 'mixed',
+    difficulty: 'medium' as 'easy' | 'medium' | 'hard',
+    includeEssay: false
   });
   const [quizLoading, setQuizLoading] = useState(false);
   const [quizScore, setQuizScore] = useState(0);
   const [isRestoring, setIsRestoring] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
+  const [essayGrades, setEssayGrades] = useState<Record<string, { score: number; maxScore: number; feedback: string }>>({});
+  const [isGradingEssay, setIsGradingEssay] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -477,17 +484,41 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
     setShareUrl('');
     try {
       const context = currentContexts.map(c => c.data).join('\n\n');
+      const difficultyText = quizSettings.difficulty === 'easy'
+        ? (lang === 'ar' ? 'سهل (مباشر، مفاهيم أساسية، بلا تعقيد)' : 'Easy (direct, basic concepts, low complexity)')
+        : quizSettings.difficulty === 'hard'
+          ? (lang === 'ar' ? 'صعب (تفكير عميق، استنتاج، دمج أفكار، أسئلة فخاخ معقولة)' : 'Hard (deep reasoning, inference, synthesis, reasonable traps)')
+          : (lang === 'ar' ? 'متوسط (فهم + تطبيق)' : 'Medium (understanding + application)');
+
+      const allowedTypes = quizSettings.includeEssay
+        ? (lang === 'ar'
+          ? 'multiple أو boolean أو essay (سؤال مقالي)'
+          : 'multiple or boolean or essay (essay question)')
+        : (lang === 'ar' ? 'multiple أو boolean أو short' : 'multiple or boolean or short');
+
       const prompt = `أنت خبير تعليمي محترف. قم بتحويل النص المرفق إلى ${quizSettings.count} أسئلة مراجعة دقيقة وشاملة.
 اللغة: يجب أن تكون لغة الأسئلة مطابقة للغة النص المرفق (إذا كان النص بالإنجليزية، اجعل الأسئلة بالإنجليزية. إذا كان بالعربية، اجعلها بالعربية).
-نوع الأسئلة المطلوبة: ${quizSettings.type === 'multiple' ? 'اختيار من متعدد' : quizSettings.type === 'boolean' ? 'صح أو خطأ' : 'إجابات قصيرة'}.
+مستوى الصعوبة المطلوب: ${difficultyText}.
+نوع الأسئلة المطلوبة: ${quizSettings.type === 'multiple' ? 'اختيار من متعدد' : quizSettings.type === 'boolean' ? 'صح أو خطأ' : 'متنوع'}.
+أنواع الأسئلة المسموح بها في الحقل type: ${allowedTypes}.
 يجب أن يكون الرد بتنسيق JSON فقط كصفوفة من الكائنات.
 كل كائن يجب أن يحتوي على:
 - id: معرف فريد (مثلاً q1, q2)
-- type: نوع السؤال (multiple أو boolean أو short)
+- type: نوع السؤال (multiple أو boolean أو short أو essay)
 - question: نص السؤال
+
+للأنواع الموضوعية:
 - options: مصفوفة من الخيارات (مطلوب لـ multiple و boolean). في حالة multiple يجب أن تكون 4 خيارات. في حالة boolean يجب أن تكون ["صح", "خطأ"] أو ["True", "False"] حسب لغة النص.
 - correctAnswer: رقم الفهرس للإجابة الصحيحة (يبدأ من 0)
 - explanation: شرح مبسط وواضح للإجابة الصحيحة.
+
+للنوع essay (سؤال مقالي):
+- options: يجب أن تكون مصفوفة فارغة []
+- correctAnswer: اجعله 0
+- explanation: إرشادات مختصرة لما يجب أن يتضمنه جواب الطالب
+- maxScore: الدرجة القصوى (مثلاً 10)
+- rubric: مصفوفة معايير تصحيح واضحة (3 إلى 6 نقاط)
+- modelAnswer: نموذج إجابة مختصر وواضح.
 
 النص المرجعي: ${context.substring(0, 15000)}`;
       
@@ -502,13 +533,30 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
       if (typeof text !== 'string') throw new Error(lang === 'ar' ? "فشل الذكاء الاصطناعي في الاستجابة" : "AI failed to respond");
 
       const parsed = JSON.parse(text.trim() || '[]');
-      const validQuestions = parsed.filter((q: any) => 
-        q.question && 
-        (q.type === 'boolean' || (q.options && Array.isArray(q.options) && q.options.length > 0))
-      ).map((q: any) => ({
-        ...q,
-        options: q.options || (q.type === 'boolean' ? [lang === 'ar' ? 'صح' : 'True', lang === 'ar' ? 'خطأ' : 'False'] : [])
-      }));
+      const validQuestions = parsed.filter((q: any) => {
+        if (!q || !q.question || !q.type) return false;
+        if (q.type === 'essay') return true;
+        return q.type === 'boolean' || (q.options && Array.isArray(q.options) && q.options.length > 0);
+      }).map((q: any) => {
+        const base = {
+          ...q,
+          options: Array.isArray(q.options)
+            ? q.options
+            : (q.type === 'boolean' ? [lang === 'ar' ? 'صح' : 'True', lang === 'ar' ? 'خطأ' : 'False'] : []),
+        };
+        if (q.type === 'essay') {
+          return {
+            ...base,
+            options: [],
+            correctAnswer: 0,
+            maxScore: typeof q.maxScore === 'number' && q.maxScore > 0 ? q.maxScore : 10,
+            rubric: Array.isArray(q.rubric) ? q.rubric.filter((x: any) => typeof x === 'string' && x.trim()) : [],
+            modelAnswer: typeof q.modelAnswer === 'string' ? q.modelAnswer : '',
+            explanation: typeof q.explanation === 'string' ? q.explanation : (lang === 'ar' ? 'أجب بإجابة منظمة تتضمن الأفكار الأساسية.' : 'Write a structured answer covering the key points.'),
+          };
+        }
+        return base;
+      });
       
       if (validQuestions.length === 0) throw new Error(lang === 'ar' ? "لم يتم توليد أسئلة صالحة من هذا المحتوى" : "No valid questions generated from this content");
       
@@ -516,11 +564,71 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
       setQuizStep('solving');
       setCurrentQuestionIdx(0);
       setUserAnswers({});
+      setEssayGrades({});
     } catch (e: any) { 
       console.error("Quiz generation error:", e);
       alert(lang === 'ar' ? `خطأ: ${e.message || 'فشل في توليد الاختبار'}` : `Error: ${e.message || 'Failed to generate quiz'}`); 
     } finally { 
       setQuizLoading(false); 
+    }
+  };
+
+  const gradeEssayAnswers = async () => {
+    const essayQs = quizQuestions.filter(q => q.type === 'essay');
+    if (essayQs.length === 0) return;
+
+    const currentContexts = contexts || [];
+    const context = currentContexts.map(c => c.data).join('\n\n');
+
+    setIsGradingEssay(true);
+    try {
+      const prompt = `أنت مصحح تربوي محترف. صحح إجابات الطالب للأسئلة المقالية بناءً على النص المرجعي فقط.
+قواعد صارمة:
+- لا تعتمد على معلومات خارج النص.
+- أعط درجة عادلة لكل سؤال وفق rubric.
+- أعد الرد JSON فقط كمصفوفة.
+
+صيغة كل عنصر:
+{
+  "id": "q1",
+  "score": 7,
+  "maxScore": 10,
+  "feedback": "ملاحظات واضحة بالعربية..."
+}
+
+النص المرجعي: ${context.substring(0, 15000)}
+
+الأسئلة والإجابات:
+${essayQs.map((q) => {
+  const ans = typeof userAnswers[q.id] === 'string' ? userAnswers[q.id] : '';
+  const rubric = Array.isArray(q.rubric) ? q.rubric.join(' | ') : '';
+  const model = typeof q.modelAnswer === 'string' ? q.modelAnswer : '';
+  return `ID: ${q.id}\nQuestion: ${q.question}\nStudentAnswer: ${ans || '(فارغ)'}\nMaxScore: ${q.maxScore || 10}\nRubric: ${rubric}\nModelAnswer: ${model}`;
+}).join('\n\n')}`;
+
+      const text = await generateText(prompt, { model: 'gemini-3-flash-preview', responseMimeType: 'application/json' });
+      const parsed = JSON.parse((text || '').trim() || '[]');
+      const nextGrades: Record<string, { score: number; maxScore: number; feedback: string }> = {};
+      if (Array.isArray(parsed)) {
+        for (const it of parsed) {
+          const id = typeof it?.id === 'string' ? it.id : '';
+          if (!id) continue;
+          const score = typeof it?.score === 'number' ? it.score : 0;
+          const maxScore = typeof it?.maxScore === 'number' && it.maxScore > 0 ? it.maxScore : 10;
+          const feedback = typeof it?.feedback === 'string' ? it.feedback : '';
+          nextGrades[id] = {
+            score: Math.max(0, Math.min(score, maxScore)),
+            maxScore,
+            feedback,
+          };
+        }
+      }
+      setEssayGrades(nextGrades);
+    } catch (e: any) {
+      console.error('Essay grading error:', e);
+      alert(lang === 'ar' ? 'تعذر تصحيح الأسئلة المقالية الآن. يمكنك المحاولة مرة أخرى.' : 'Failed to grade essay questions. Please try again.');
+    } finally {
+      setIsGradingEssay(false);
     }
   };
 
@@ -584,7 +692,20 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
     }
   };
 
-  const calculateScore = () => quizQuestions.reduce((acc, q) => acc + (userAnswers[q.id] === q.correctAnswer ? 1 : 0), 0);
+  const calculateScore = () => {
+    const objective = quizQuestions.reduce((acc, q) => {
+      if (q.type === 'essay') return acc;
+      return acc + (userAnswers[q.id] === q.correctAnswer ? 1 : 0);
+    }, 0);
+    const essay = Object.values(essayGrades).reduce((acc, g) => acc + (typeof g?.score === 'number' ? g.score : 0), 0);
+    return objective + essay;
+  };
+
+  const calculateMaxScore = () => {
+    const objectiveMax = quizQuestions.reduce((acc, q) => acc + (q.type === 'essay' ? 0 : 1), 0);
+    const essayMax = quizQuestions.reduce((acc, q) => acc + (q.type === 'essay' ? (q.maxScore || 10) : 0), 0);
+    return objectiveMax + essayMax;
+  };
 
   return (
     <div className={`grid grid-cols-1 lg:grid-cols-12 gap-6 h-[calc(100vh-10rem)] ${lang === 'ar' ? 'rtl' : 'ltr'} font-cairo`}>
@@ -627,13 +748,13 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
 
       {/* Main Area */}
       <div className="lg:col-span-9 bg-white dark:bg-slate-900 rounded-[4rem] shadow-2xl flex flex-col border border-slate-100 overflow-hidden relative">
-        {(loading || isGeneratingInfo) && (
+        {(loading || isGeneratingInfo || isGradingEssay) && (
           <div className="absolute inset-0 bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm z-[80] flex flex-col items-center justify-center space-y-4 animate-in fade-in">
             <div className="relative">
               <div className="w-24 h-24 border-8 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin"></div>
               <Brain className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-600 animate-pulse" size={32} />
             </div>
-            <p className="font-black text-indigo-600 animate-pulse">{lang === 'ar' ? 'جاري التحليل والتوليد بذكاء...' : 'Smart Generating...'}</p>
+            <p className="font-black text-indigo-600 animate-pulse">{lang === 'ar' ? (isGradingEssay ? 'جاري تصحيح الأسئلة المقالية...' : 'جاري التحليل والتوليد بذكاء...') : (isGradingEssay ? 'Grading essay answers...' : 'Smart Generating...')}</p>
           </div>
         )}
 
@@ -750,7 +871,7 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
                   )}
                   <div className="w-24 h-24 bg-indigo-600 text-white rounded-[2.5rem] flex items-center justify-center mx-auto shadow-2xl"><Sparkles size={48} /></div>
                   <h3 className="text-4xl font-black dark:text-white">{t.ai_quiz_title}</h3>
-                  <div className="bg-slate-50 dark:bg-slate-800/50 p-8 rounded-[3rem] grid grid-cols-3 gap-6 shadow-inner border border-slate-100 w-full max-w-xl">
+                  <div className="bg-slate-50 dark:bg-slate-800/50 p-8 rounded-[3rem] grid grid-cols-2 md:grid-cols-4 gap-6 shadow-inner border border-slate-100 w-full max-w-2xl">
                     <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{t.ai_quiz_count}</label><input type="number" value={quizSettings.count} onChange={e => setQuizSettings({...quizSettings, count: parseInt(e.target.value) || 5})} className="w-full p-4 bg-white rounded-2xl text-center font-black text-xl" /></div>
                     <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">المدة (د)</label><input type="number" value={quizSettings.timeLimit} onChange={e => setQuizSettings({...quizSettings, timeLimit: parseInt(e.target.value) || 10})} className="w-full p-4 bg-white rounded-2xl text-center font-black text-xl" /></div>
                     <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{t.ai_quiz_type}</label>
@@ -758,7 +879,21 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
                         <option value="mixed">{t.ai_quiz_type_mixed}</option><option value="multiple">{t.ai_quiz_type_multi}</option><option value="boolean">{t.ai_quiz_type_bool}</option>
                       </select>
                     </div>
+                    <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{lang === 'ar' ? 'الصعوبة' : 'Difficulty'}</label>
+                      <select value={quizSettings.difficulty} onChange={e => setQuizSettings({...quizSettings, difficulty: e.target.value as any})} className="w-full p-4 bg-white rounded-2xl text-center font-black text-xs appearance-none">
+                        <option value="easy">{lang === 'ar' ? 'سهل' : 'Easy'}</option>
+                        <option value="medium">{lang === 'ar' ? 'متوسط' : 'Medium'}</option>
+                        <option value="hard">{lang === 'ar' ? 'صعب' : 'Hard'}</option>
+                      </select>
+                    </div>
                   </div>
+                  <label className="w-full max-w-2xl flex items-center justify-between bg-white border border-slate-100 rounded-3xl px-8 py-6 shadow-sm">
+                    <div className="text-right">
+                      <div className="font-black text-sm">{lang === 'ar' ? 'تضمين أسئلة مقالية' : 'Include Essay Questions'}</div>
+                      <div className="text-xs text-slate-500 font-bold">{lang === 'ar' ? 'سيتم تصحيحها تلقائيًا بعد التسليم' : 'Auto-graded after submission'}</div>
+                    </div>
+                    <input type="checkbox" checked={quizSettings.includeEssay} onChange={e => setQuizSettings({ ...quizSettings, includeEssay: e.target.checked })} className="w-5 h-5" />
+                  </label>
                   <button onClick={generateAITest} disabled={quizLoading || contexts.length === 0} className="w-full max-w-xl py-8 bg-indigo-600 text-white rounded-[2.5rem] font-black text-2xl shadow-xl flex items-center justify-center gap-4 transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-50">
                     {quizLoading ? <Loader2 className="animate-spin" size={32} /> : <Sparkles size={32} />} {t.ai_quiz_start}
                   </button>
@@ -780,18 +915,34 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
                         }} className="flex items-center gap-2 text-indigo-600 font-bold text-xs"><Printer size={14}/> تصدير ورقي فارغ</button>
                       </div>
                       <h2 className="text-3xl font-black leading-relaxed dark:text-white text-center">{quizQuestions[currentQuestionIdx].question}</h2>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {(quizQuestions[currentQuestionIdx]?.options || []).map((opt, i) => (
-                          <button key={i} onClick={() => setUserAnswers({...userAnswers, [quizQuestions[currentQuestionIdx].id]: i})} className={`p-8 rounded-[3rem] text-right font-black text-lg transition-all border-4 flex items-center gap-6 shadow-xl relative ${userAnswers[quizQuestions[currentQuestionIdx].id] === i ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30' : 'border-white dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-indigo-100'}`}>
-                            <div className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center shrink-0 font-black transition-colors ${userAnswers[quizQuestions[currentQuestionIdx].id] === i ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 dark:bg-slate-700 text-slate-300'}`}>{String.fromCharCode(65+i)}</div>
-                            <span className="flex-1">{opt}</span>
-                          </button>
-                        ))}
-                      </div>
+                      {quizQuestions[currentQuestionIdx].type === 'essay' ? (
+                        <div className="max-w-3xl mx-auto">
+                          <div className="bg-indigo-50 border border-indigo-100 rounded-3xl p-6 text-right">
+                            <div className="text-xs font-black text-indigo-700">{lang === 'ar' ? 'إرشادات' : 'Guidance'}</div>
+                            <div className="text-sm font-bold text-slate-700 leading-relaxed">{quizQuestions[currentQuestionIdx].explanation}</div>
+                            <div className="text-[11px] font-black text-slate-500 mt-2">{lang === 'ar' ? `الدرجة: ${quizQuestions[currentQuestionIdx].maxScore || 10}` : `Points: ${quizQuestions[currentQuestionIdx].maxScore || 10}`}</div>
+                          </div>
+                          <textarea
+                            value={typeof userAnswers[quizQuestions[currentQuestionIdx].id] === 'string' ? userAnswers[quizQuestions[currentQuestionIdx].id] : ''}
+                            onChange={(e) => setUserAnswers({ ...userAnswers, [quizQuestions[currentQuestionIdx].id]: e.target.value })}
+                            className="w-full mt-6 p-6 bg-white rounded-3xl border-2 border-slate-100 shadow-sm text-right font-bold min-h-[200px]"
+                            placeholder={lang === 'ar' ? 'اكتب إجابتك هنا...' : 'Write your answer here...'}
+                          />
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          {(quizQuestions[currentQuestionIdx]?.options || []).map((opt, i) => (
+                            <button key={i} onClick={() => setUserAnswers({...userAnswers, [quizQuestions[currentQuestionIdx].id]: i})} className={`p-8 rounded-[3rem] text-right font-black text-lg transition-all border-4 flex items-center gap-6 shadow-xl relative ${userAnswers[quizQuestions[currentQuestionIdx].id] === i ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30' : 'border-white dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-indigo-100'}`}>
+                              <div className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center shrink-0 font-black transition-colors ${userAnswers[quizQuestions[currentQuestionIdx].id] === i ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 dark:bg-slate-700 text-slate-300'}`}>{String.fromCharCode(65+i)}</div>
+                              <span className="flex-1">{opt}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <div className="flex justify-between pt-10 border-t items-center">
                         <button onClick={() => setCurrentQuestionIdx(i => Math.max(0, i-1))} disabled={currentQuestionIdx === 0} className="px-10 py-5 bg-slate-100 dark:bg-slate-800 rounded-3xl font-black flex items-center gap-2 transition-all hover:bg-slate-200">{t.ai_quiz_prev}</button>
                         {currentQuestionIdx === quizQuestions.length - 1 ? 
-                          <button onClick={() => setQuizStep('result')} disabled={userAnswers[quizQuestions[currentQuestionIdx].id] === undefined} className="px-16 py-5 bg-emerald-600 text-white rounded-3xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all">{t.ai_quiz_submit}</button> :
+                          <button onClick={async () => { await gradeEssayAnswers(); setQuizStep('result'); }} disabled={userAnswers[quizQuestions[currentQuestionIdx].id] === undefined || isGradingEssay} className="px-16 py-5 bg-emerald-600 text-white rounded-3xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all">{t.ai_quiz_submit}</button> :
                           <button onClick={() => setCurrentQuestionIdx(i => i + 1)} disabled={userAnswers[quizQuestions[currentQuestionIdx].id] === undefined} className="px-16 py-5 bg-indigo-600 text-white rounded-3xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all">{t.ai_quiz_next}</button>
                         }
                       </div>
@@ -818,6 +969,9 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
                        <span className="text-7xl font-black text-emerald-500">{calculateScore()}</span>
                        <span className="text-[12px] font-black text-slate-400 mt-2 uppercase tracking-widest">{t.ai_quiz_score_label}</span>
                     </div>
+                 </div>
+                 <div className="text-xs font-black text-slate-500">
+                   {lang === 'ar' ? `الدرجة القصوى: ${calculateMaxScore()}` : `Max score: ${calculateMaxScore()}`}
                  </div>
 
                  {shareUrl && (
@@ -853,36 +1007,63 @@ export const AIAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) =
                       </button>
                       <button onClick={() => {
                         const html = quizQuestions.map((q, i) => {
-                          const isCorrect = userAnswers[q.id] === q.correctAnswer;
+                          const isCorrect = q.type === 'essay' ? true : (userAnswers[q.id] === q.correctAnswer);
                           const opts = q.options || [];
+                          if (q.type === 'essay') {
+                            const ans = typeof userAnswers[q.id] === 'string' ? userAnswers[q.id] : '';
+                            const g = essayGrades[q.id];
+                            return `<div class="q-card correct"><div class="q-num" style="background:#6366f1">${i + 1}</div><div style="font-weight:900; margin-bottom:10px;">${q.question}</div><div style="font-weight:bold; color:#475569;">إجابتك:</div><div style="white-space:pre-wrap; background:#fff; border:1px solid #e2e8f0; padding:10px; border-radius:12px;">${(ans || '--').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div style="margin-top:10px; font-weight:900;">الدرجة: ${g ? `${g.score}/${g.maxScore}` : '--'}</div>${g?.feedback ? `<div class="explanation"><b>ملاحظات التصحيح:</b> ${String(g.feedback).replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>')}</div>` : ''}</div>`;
+                          }
                           return `<div class="q-card ${isCorrect?'correct':'wrong'}"><div class="q-num" style="background:${isCorrect?'#10b981':'#ef4444'}">${i+1}</div><div style="font-weight:900; margin-bottom:10px;">${q.question}</div><div style="font-weight:bold; color:#475569;">إجابتك: ${opts[userAnswers[q.id]]||'--'} ${isCorrect?'✅':'❌'}</div>${!isCorrect?`<div style="color:#059669; font-weight:bold;">الصحيحة: ${opts[q.correctAnswer] || '--'}</div>`:''}<div class="explanation"><b>شرح المعلم الخصوصي:</b> ${q.explanation}</div></div>`;
                         }).join('');
-                        printA4('تقرير مراجعة الاختبار الشامل', html, quizSettings.timeLimit, { percent: Math.round((calculateScore()/quizQuestions.length)*100) });
+                        const max = calculateMaxScore();
+                        const pct = max > 0 ? Math.round((calculateScore() / max) * 100) : 0;
+                        printA4('تقرير مراجعة الاختبار الشامل', html, quizSettings.timeLimit, { percent: pct });
                       }} className="px-6 py-3 bg-amber-500 text-white rounded-xl font-black text-xs flex items-center gap-2 shadow-lg hover:bg-amber-600 transition-all"><Printer size={16}/> طباعة التقرير PDF</button>
                       <button onClick={() => setQuizStep('result')} className="p-3 bg-slate-100 text-slate-400 hover:text-rose-500 rounded-xl transition-all shadow-sm" title="إغلاق"><X size={20} /></button>
                     </div>
                   </div>
                   <div className="flex-1 overflow-y-auto p-12 space-y-10 custom-scrollbar bg-slate-50/30">
                     {quizQuestions.map((q, i) => {
-                      const isCorrect = userAnswers[q.id] === q.correctAnswer;
+                      const isCorrect = q.type === 'essay' ? true : (userAnswers[q.id] === q.correctAnswer);
+                      const essayGrade = q.type === 'essay' ? essayGrades[q.id] : undefined;
                       return (
                         <div key={i} className={`bg-white dark:bg-slate-900 p-10 rounded-[3rem] border-4 shadow-xl relative animate-in slide-in-from-bottom-4 ${isCorrect ? 'border-emerald-100' : 'border-rose-100'}`}>
                            <div className="flex items-center gap-6 mb-8">
                              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-lg ${isCorrect ? 'bg-emerald-500' : 'bg-rose-500'}`}>{i + 1}</div>
                              <h4 className="text-2xl font-black leading-relaxed">{q.question}</h4>
                            </div>
-                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                              {(q.options || []).map((opt, oi) => {
-                                const isUser = userAnswers[q.id] === oi;
-                                const isAns = oi === q.correctAnswer;
-                                return (
-                                  <div key={oi} className={`p-6 rounded-[2rem] border-4 font-bold flex items-center gap-4 ${isAns ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : isUser ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-50 bg-slate-50 text-slate-400'}`}>
-                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${isAns ? 'bg-emerald-500 text-white' : isUser ? 'bg-rose-500 text-white' : 'bg-slate-200'}`}>{String.fromCharCode(65+oi)}</div>
-                                    {opt}
-                                  </div>
-                                );
-                              })}
-                           </div>
+                           {q.type === 'essay' ? (
+                             <div className="space-y-4 mb-8">
+                               <div className="bg-slate-50 border border-slate-100 rounded-3xl p-6">
+                                 <div className="text-xs font-black text-slate-500 mb-2">{lang === 'ar' ? 'إجابتك' : 'Your answer'}</div>
+                                 <div className="whitespace-pre-wrap font-bold text-slate-800">{typeof userAnswers[q.id] === 'string' && userAnswers[q.id].trim() ? userAnswers[q.id] : (lang === 'ar' ? '(لم تتم الإجابة)' : '(No answer)')}</div>
+                               </div>
+                               <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 rounded-3xl p-6">
+                                 <div className="font-black text-indigo-700">{lang === 'ar' ? 'الدرجة' : 'Score'}</div>
+                                 <div className="font-black text-indigo-900">{essayGrade ? `${essayGrade.score}/${essayGrade.maxScore}` : (lang === 'ar' ? 'لم يتم التصحيح بعد' : 'Not graded yet')}</div>
+                               </div>
+                               {essayGrade?.feedback ? (
+                                 <div className="bg-white border border-slate-100 rounded-3xl p-6">
+                                   <div className="text-xs font-black text-slate-500 mb-2">{lang === 'ar' ? 'ملاحظات التصحيح' : 'Grader feedback'}</div>
+                                   <div className="whitespace-pre-wrap font-bold text-slate-800 leading-relaxed">{essayGrade.feedback}</div>
+                                 </div>
+                               ) : null}
+                             </div>
+                           ) : (
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                               {(q.options || []).map((opt, oi) => {
+                                 const isUser = userAnswers[q.id] === oi;
+                                 const isAns = oi === q.correctAnswer;
+                                 return (
+                                   <div key={oi} className={`p-6 rounded-[2rem] border-4 font-bold flex items-center gap-4 ${isAns ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : isUser ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-50 bg-slate-50 text-slate-400'}`}>
+                                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${isAns ? 'bg-emerald-500 text-white' : isUser ? 'bg-rose-500 text-white' : 'bg-slate-200'}`}>{String.fromCharCode(65+oi)}</div>
+                                     {opt}
+                                   </div>
+                                 );
+                               })}
+                             </div>
+                           )}
                            <div className="p-6 bg-amber-50 dark:bg-amber-900/10 border-r-8 border-amber-400 rounded-2xl text-sm leading-relaxed font-bold shadow-inner flex items-start gap-4">
                               <Info className="text-amber-500 shrink-0" size={24}/>
                               <p><b>شرح المعلم:</b><br/>{q.explanation}</p>
