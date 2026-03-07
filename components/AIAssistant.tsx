@@ -651,7 +651,7 @@ ${essayQs.map((q) => {
           shuffleQuestions: true,
           shuffleOptions: true,
           language: lang === 'ar' ? 'ar' : 'en',
-          difficulty: 'medium',
+          difficulty: quizSettings.difficulty,
           requireLogin: false,
           maxAttempts: 1
         },
@@ -661,7 +661,10 @@ ${essayQs.map((q) => {
             question: q.question,
             options: q.options,
             correctAnswer: q.correctAnswer,
-            explanation: q.explanation
+            explanation: q.explanation,
+            maxScore: q.type === 'essay' ? (q.maxScore || 10) : undefined,
+            rubric: q.type === 'essay' ? (Array.isArray(q.rubric) ? q.rubric : []) : undefined,
+            modelAnswer: q.type === 'essay' ? (typeof q.modelAnswer === 'string' ? q.modelAnswer : '') : undefined
         })),
         createdAt: new Date().toISOString()
       };
