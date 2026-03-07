@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, Volume2, Sparkles, Play, Square, Loader2, 
-  Upload, Video, Headphones, Download, FileText, 
-  X, Image as ImageIcon, Waves, FileAudio, PlayCircle, PauseCircle,
-  Radio, Monitor, Info, ShieldAlert, CheckCircle2, Cpu, Film, Beaker,
-  History, ArrowRight, Share2, Printer
+  Mic, Loader2, 
+  Upload, Video, Headphones, Download,
+  X, Image as ImageIcon, Waves, FileAudio,
+  Radio, Monitor, Info, ShieldAlert, Cpu, Film,
+  History, Printer, FileText
 } from 'lucide-react';
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
-import { generateText, generateWithParts, textToSpeech } from '../services/geminiService';
+import { callAI, generateVideos, getVideosOperation } from '../services/geminiService';
+import { useToast } from '../hooks/useToast';
 
 // --- Audio & File Helpers ---
 function encode(bytes: Uint8Array) {
@@ -76,10 +77,10 @@ function audioBufferToMp3(buffer: AudioBuffer) {
 
 export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }) => {
   const [isLive, setIsLive] = useState(false);
+  const toast = useToast();
   const [lectureText, setLectureText] = useState('');
   const [fileType, setFileType] = useState<'text' | 'image' | 'pdf' | null>(null);
   const [imageData, setImageData] = useState<string | null>(null);
-  const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<{role: 'user' | 'ai', text: string}[]>([]);
   const [fileLoading, setFileLoading] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -90,25 +91,10 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
   const [isAudioSummaryLoading, setIsAudioSummaryLoading] = useState(false);
   const [summaryAudioUrl, setSummaryAudioUrl] = useState<string | null>(null);
 
-  const [lectureDigest, setLectureDigest] = useState<string>('');
-  const [isDigestLoading, setIsDigestLoading] = useState(false);
-
-  const platformApiKey =
-    (import.meta as any).env?.VITE_GEMINI_LIVE_API_KEY ||
-    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
-    (import.meta as any).env?.VITE_API_KEY ||
-    '';
-
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-
-  const inputAudioContextRef = useRef<AudioContext | null>(null);
-  const liveStreamRef = useRef<MediaStream | null>(null);
-  const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const sessionOpenRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
@@ -121,370 +107,12 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     }
   }, []);
 
-  const escapeHtml = (s: string) =>
-    s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-
-  const printHtmlInHiddenIframe = (html: string) => {
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    iframe.srcdoc = html;
-
-    const cleanup = () => {
-      try { iframe.remove(); } catch { /* ignore */ }
-    };
-
-    iframe.onload = () => {
-      try {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-      } finally {
-        window.setTimeout(cleanup, 1500);
-      }
-    };
-
-    document.body.appendChild(iframe);
-  };
-
-  const printConversation = () => {
-    const title = lang === 'ar' ? 'محادثة: تحدث مع الملف' : 'Conversation: Talk to File';
-    const fileLabel = fileType ? (lang === 'ar' ? `الملف: ${fileType}` : `File: ${fileType}`) : '';
-    const now = new Date();
-    const dateLabel = `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`;
-
-    const itemsHtml = transcript
-      .map((m) => {
-        const roleLabel = m.role === 'user'
-          ? (lang === 'ar' ? 'أنت' : 'You')
-          : (lang === 'ar' ? 'المعلم الذكي' : 'AI Teacher');
-        const safeText = escapeHtml(String(m.text || '')).replace(/\n/g, '<br/>');
-        const cls = m.role === 'user' ? 'user' : 'ai';
-        return `
-          <div class="msg ${cls}">
-            <div class="role">${roleLabel}</div>
-            <div class="text">${safeText}</div>
-          </div>
-        `;
-      })
-      .join('');
-
-    const html = `
-      <!doctype html>
-      <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>${escapeHtml(title)}</title>
-          <style>
-            @page { margin: 16mm; }
-            body {
-              font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif;
-              color: #0f172a;
-              background: #ffffff;
-            }
-            .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
-            .title { font-size: 18px; font-weight: 800; }
-            .meta { font-size: 12px; color: #475569; }
-            .msgs { margin-top: 10px; }
-            .msg { border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
-            .msg.user { background: #f1f5f9; }
-            .msg.ai { background: #eef2ff; }
-            .role { font-size: 12px; font-weight: 800; color: #334155; margin-bottom: 6px; }
-            .text { font-size: 13px; line-height: 1.7; white-space: normal; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div>
-              <div class="title">${escapeHtml(title)}</div>
-              <div class="meta">${escapeHtml(fileLabel)}</div>
-            </div>
-            <div class="meta">${escapeHtml(dateLabel)}</div>
-          </div>
-          <div class="msgs">${itemsHtml || `<div class="meta">${escapeHtml(lang === 'ar' ? 'لا توجد رسائل بعد.' : 'No messages yet.')}</div>`}</div>
-          <script>setTimeout(() => window.print(), 50);</script>
-        </body>
-      </html>
-    `;
-
-    printHtmlInHiddenIframe(html);
-  };
-
-  const printUploadedFile = () => {
-    const title = lang === 'ar' ? 'طباعة الملف المرفوع' : 'Print Uploaded File';
-    const now = new Date();
-    const dateLabel = `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`;
-
-    if (fileType === 'pdf') {
-      printPdf();
-      return;
-    }
-
-    if (fileType === 'image' && imageData) {
-      const html = `
-        <!doctype html>
-        <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-          <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>${escapeHtml(title)}</title>
-            <style>
-              @page { margin: 16mm; }
-              body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif; color: #0f172a; }
-              .meta { font-size: 12px; color: #475569; margin-bottom: 12px; }
-              img { max-width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 12px; }
-            </style>
-          </head>
-          <body>
-            <div class="meta">${escapeHtml(dateLabel)}</div>
-            <img src="${imageData}" alt="uploaded" />
-            <script>setTimeout(() => window.print(), 50);</script>
-          </body>
-        </html>
-      `;
-      printHtmlInHiddenIframe(html);
-      return;
-    }
-
-    const text = (lectureText || '').trim();
-    const safe = escapeHtml(text);
-    const html = `
-      <!doctype html>
-      <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>${escapeHtml(title)}</title>
-          <style>
-            @page { margin: 16mm; }
-            body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif; color: #0f172a; }
-            .meta { font-size: 12px; color: #475569; margin-bottom: 12px; }
-            pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="meta">${escapeHtml(dateLabel)}</div>
-          <pre>${safe || escapeHtml(lang === 'ar' ? 'لا يوجد نص لطباعته.' : 'No text to print.')}</pre>
-          <script>setTimeout(() => window.print(), 50);</script>
-        </body>
-      </html>
-    `;
-    printHtmlInHiddenIframe(html);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (pdfObjectUrl) {
-        try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
-      }
-    };
-  }, [pdfObjectUrl]);
-
-  const printPdf = async () => {
-    if (!pdfObjectUrl) return;
-
-    try {
-      const iframe = document.createElement('iframe');
-      iframe.style.position = 'fixed';
-      iframe.style.right = '0';
-      iframe.style.bottom = '0';
-      iframe.style.width = '0';
-      iframe.style.height = '0';
-      iframe.style.border = '0';
-      iframe.src = pdfObjectUrl;
-
-      const cleanup = () => {
-        try { iframe.remove(); } catch { /* ignore */ }
-      };
-
-      iframe.onload = () => {
-        try {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-        } finally {
-          window.setTimeout(cleanup, 1500);
-        }
-      };
-
-      document.body.appendChild(iframe);
-    } catch {
-      try {
-        const title = lang === 'ar' ? 'طباعة PDF' : 'Print PDF';
-        const html = `
-          <!doctype html>
-          <html lang="${lang === 'ar' ? 'ar' : 'en'}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-            <head>
-              <meta charset="utf-8" />
-              <meta name="viewport" content="width=device-width, initial-scale=1" />
-              <title>${escapeHtml(title)}</title>
-              <style>
-                @page { margin: 16mm; }
-                body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Noto Naskh Arabic", sans-serif; }
-                iframe { width: 100vw; height: 100vh; border: 0; }
-              </style>
-            </head>
-            <body>
-              <iframe src="${pdfObjectUrl}"></iframe>
-              <script>setTimeout(() => window.print(), 300);</script>
-            </body>
-          </html>
-        `;
-        printHtmlInHiddenIframe(html);
-      } catch {
-        alert(lang === 'ar'
-          ? 'تعذر بدء طباعة ملف PDF على هذا المتصفح. جرّب تنزيل الملف ثم طباعته من جهازك.'
-          : 'Could not start PDF printing in this browser. Try downloading the file and printing locally.');
-      }
-    }
-  };
-
   const stopAllAudio = () => {
-    audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+    audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(err) { console.warn("Audio stop error:", err); } });
     audioSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
   };
 
-  const stopLiveSession = async () => {
-    try {
-      stopAllAudio();
-    } catch {
-      // ignore
-    }
-
-    sessionOpenRef.current = false;
-
-    try {
-      liveProcessorRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    liveProcessorRef.current = null;
-
-    try {
-      liveSourceRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    liveSourceRef.current = null;
-
-    try {
-      liveStreamRef.current?.getTracks().forEach(t => t.stop());
-    } catch {
-      // ignore
-    }
-    liveStreamRef.current = null;
-
-    try {
-      inputAudioContextRef.current?.close();
-    } catch {
-      // ignore
-    }
-    inputAudioContextRef.current = null;
-
-    try {
-      audioContextRef.current?.close();
-    } catch {
-      // ignore
-    }
-    audioContextRef.current = null;
-
-    try {
-      const s = sessionRef.current;
-      if (s && typeof s.close === 'function') s.close();
-    } catch {
-      // ignore
-    }
-
-    sessionRef.current = null;
-    setIsLive(false);
-  };
-
-  const userBufferRef = useRef<string>('');
-  const aiBufferRef = useRef<string>('');
-  const userFlushTimerRef = useRef<number | null>(null);
-  const aiFlushTimerRef = useRef<number | null>(null);
-
-  const appendTranscriptLine = (role: 'user' | 'ai', line: string) => {
-    const t = String(line || '').trim();
-    if (!t) return;
-    setTranscript((prev) => {
-      const last = prev[prev.length - 1];
-      if (last && last.role === role) {
-        const updated = [...prev];
-        updated[updated.length - 1] = { ...last, text: `${last.text}\n${t}` };
-        return updated;
-      }
-      return [...prev, { role, text: t }];
-    });
-  };
-
-  const flushBufferLines = (role: 'user' | 'ai') => {
-    const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
-    const raw = String(bufferRef.current || '');
-    if (!raw.trim()) return;
-
-    const parts = raw.split(/\n+/);
-    if (parts.length <= 1) return;
-
-    const completeLines = parts.slice(0, -1).map(s => s.trim()).filter(Boolean);
-    const remainder = parts[parts.length - 1] || '';
-    bufferRef.current = remainder;
-
-    if (completeLines.length === 0) return;
-    completeLines.forEach((t) => appendTranscriptLine(role, t));
-  };
-
-  const maybeFlushSentence = (role: 'user' | 'ai') => {
-    const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
-    const text = String(bufferRef.current || '');
-
-    const firstEndIdx = text.search(/[\.\!\?\u061F\u061B\n]/);
-    if (firstEndIdx < 0) return;
-
-    const endChar = text[firstEndIdx];
-    const sliceEnd = endChar === '\n' ? firstEndIdx : firstEndIdx + 1;
-    const firstSentence = text.slice(0, sliceEnd).trim();
-    const rest = text.slice(sliceEnd).trimStart();
-    if (!firstSentence) return;
-
-    bufferRef.current = rest;
-    appendTranscriptLine(role, firstSentence);
-  };
-
-  const flushRemainingAsLine = (role: 'user' | 'ai') => {
-    const bufferRef = role === 'user' ? userBufferRef : aiBufferRef;
-    const raw = String(bufferRef.current || '').trim();
-    if (!raw) return;
-    bufferRef.current = '';
-    appendTranscriptLine(role, raw);
-  };
-
-  const scheduleFlush = (role: 'user' | 'ai') => {
-    const timerRef = role === 'user' ? userFlushTimerRef : aiFlushTimerRef;
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      try {
-        flushBufferLines(role);
-        maybeFlushSentence(role);
-        flushRemainingAsLine(role);
-      } catch {
-        // ignore
-      }
-    }, 700);
-  };
-
-  // --- Begin Defensive Transcript Handlers Patch (TS18048) ---
-
-  // Defensive helper for safely extracting text for user transcript
   function getUserTranscriptText(msg: LiveServerMessage): string | undefined {
     if (
       msg.serverContent &&
@@ -496,7 +124,6 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     return undefined;
   }
 
-  // Defensive helper for safely extracting text for ai transcript
   function getAiTranscriptText(msg: LiveServerMessage): string | undefined {
     if (
       msg.serverContent &&
@@ -508,21 +135,14 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
     return undefined;
   }
 
-  // --- End Defensive Transcript Handlers Patch ---
-
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileLoading(true);
     setSummaryAudioUrl(null); 
     setVideoUrl(null);
-    setLectureDigest('');
     try {
       if (file.type === 'application/pdf') {
-        if (pdfObjectUrl) {
-          try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
-        }
-        setPdfObjectUrl(URL.createObjectURL(file));
         const pdfjs = (window as any).pdfjsLib;
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
@@ -530,45 +150,24 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const content = await page.getTextContent();
-          const pageText = (content.items || [])
-            .map((it: any) => {
-              const s = typeof it?.str === 'string' ? it.str : '';
-              const end = it?.hasEOL ? '\n' : ' ';
-              return s + end;
-            })
-            .join('')
-            .replace(/[ \t]+\n/g, '\n')
-            .replace(/[ \t]{2,}/g, ' ')
-            .trim();
-          text += pageText + '\n\n';
+          text += content.items.map((it: any) => it.str).join(' ') + '\n';
         }
         setLectureText(text);
         setFileType('pdf');
         setImageData(null);
-        buildLectureDigest(text);
       } else if (file.type.startsWith('image/')) {
-        if (pdfObjectUrl) {
-          try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
-        }
-        setPdfObjectUrl(null);
         const reader = new FileReader();
         reader.onload = (ev) => {
           setImageData(ev.target?.result as string);
           setFileType('image');
           setLectureText('');
-          setLectureDigest('');
         };
         reader.readAsDataURL(file);
       } else {
-        if (pdfObjectUrl) {
-          try { URL.revokeObjectURL(pdfObjectUrl); } catch { /* ignore */ }
-        }
-        setPdfObjectUrl(null);
         const text = await file.text();
         setLectureText(text);
         setFileType('text');
         setImageData(null);
-        buildLectureDigest(text);
       }
       setTranscript(prev => [
         ...prev, 
@@ -579,93 +178,147 @@ export const VoiceAssistant: React.FC<{ lang?: 'ar' | 'en' }> = ({ lang = 'ar' }
             : `"${file.name}" loaded, ready for video or podcast.` 
         }
       ]);
-    } catch (err) { alert("خطأ في التحميل"); } finally { setFileLoading(false); }
+    } catch (err) { 
+      console.error("Upload error:", err);
+      toast.error(lang === 'ar' ? "خطأ في التحميل" : "Upload Error", lang === 'ar' ? "فشل في معالجة الملف المرفوع." : "Failed to process uploaded file.");
+    } finally { 
+      setFileLoading(false); 
+    }
+  };
+
+  const exportTranscriptToPDF = () => {
+    if (transcript.length === 0) return;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return toast.warning(lang === 'ar' ? "تنبيه" : "Warning", lang === 'ar' ? "يرجى تفعيل النوافذ المنبثقة." : "Please enable popups.");
+
+    const contentHtml = transcript.map((m) => `
+      <div style="margin-bottom: 20px; padding: 15px; border-radius: 15px; background: ${m.role === 'user' ? '#f0f4ff' : '#f0fff4'}; border: 1px solid ${m.role === 'user' ? '#dce3f1' : '#dcf1dc'};">
+        <strong style="color: ${m.role === 'user' ? '#4f46e5' : '#10b981'}; display: block; margin-bottom: 5px; font-size: 12px; text-transform: uppercase;">
+          ${m.role === 'user' ? (lang === 'ar' ? 'أنت (الطالب)' : 'You (Student)') : (lang === 'ar' ? 'المعلم الذكي' : 'Smart AI Tutor')}
+        </strong>
+        <div style="font-size: 14px; line-height: 1.6; color: #1e293b;">${m.text}</div>
+      </div>
+    `).join('');
+
+    printWindow.document.write(`
+      <html dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+        <head>
+          <title>Smart Student - Conversation Report</title>
+          <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" rel="stylesheet">
+          <style>
+            body { font-family: 'Cairo', sans-serif; padding: 40px; background: #fff; color: #1e293b; }
+            .header { border-bottom: 4px solid #4f46e5; padding-bottom: 20px; margin-bottom: 30px; text-align: center; }
+            .header h1 { color: #4f46e5; margin: 0; font-size: 24px; font-weight: 900; }
+            .footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 10px; color: #94a3b8; font-weight: bold; }
+            @media print { * { -webkit-print-color-adjust: exact; } }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>منصة الطالب الذكي - سجل الحوار التعليمي</h1>
+            <p style="margin-top: 5px; font-size: 12px; color: #64748b;">تاريخ الجلسة: ${new Date().toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-US')}</p>
+          </div>
+          <div class="transcript-container">${contentHtml}</div>
+          <div class="footer">تم استخراج هذا التقرير آلياً بواسطة المساعد الصوتي الذكي - 2025</div>
+          <script>
+            window.onload = () => {
+              setTimeout(() => {
+                window.print();
+                window.addEventListener('afterprint', () => { window.close(); });
+              }, 1000);
+            }
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
   };
 
   const generateAudioSummary = async () => {
-    if (!lectureText && !imageData) return alert("يرجى رفع ملف أولاً.");
+    if (!lectureText && !imageData) return toast.warning(lang === 'ar' ? "تنبيه" : "Warning", lang === 'ar' ? "يرجى رفع ملف أولاً." : "Please upload a file first.");
     setIsAudioSummaryLoading(true);
     setSummaryAudioUrl(null);
     try {
-      await ensureDigestForText();
-      const src = lectureDigest.trim() ? lectureDigest : lectureText;
       const prompt = imageData 
-        ? "أعطني شرحاً صوتياً مفصلاً جداً لهذه الصورة وكأنك معلم يشرح لطلابه بأسلوب قصصي ممتع. اكتب بالعربية فقط."
-        : `قم بإنشاء شرح صوتي كامل ومفصل جداً يغطي المحاضرة بالكامل بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. اكتب بالعربية فقط.
-محتوى المحاضرة/ملخصها المنظم:
-${src.substring(0, 20000)}`;
+        ? "أعطني شرحاً صوتياً مفصلاً جداً لهذه الصورة وكأنك معلم يشرح لطلابه بأسلوب قصصي ممتع."
+        : `قم بإنشاء شرح صوتي كامل ومفصل جداً بأسلوب حوار ممتع ومبسط بين 'الدكتور' و 'الطالب'. المحتوى:\n${lectureText.substring(0, 15000)}`;
 
-      const textRes = await generateText(prompt, { model: 'gemini-3-flash-preview' });
-      const summaryText = textRes || "";
-      const audioBase64 = await textToSpeech(`اقرأ هذا الشرح بأسلوب تفاعلي: ${summaryText}`, 'Kore');
+      const textRes = await callAI('gemini-3-flash-preview', imageData 
+          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: prompt }] } 
+          : { parts: [{ text: prompt }] } 
+      );
+
+      const summaryText = textRes.text || "";
+      const ttsRes = await callAI("gemini-2.5-flash-preview-tts", [{ parts: [{ text: `اقرأ هذا الشرح بأسلوب تفاعلي: ${summaryText}` }] }], { 
+          responseModalities: ["AUDIO"], 
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } } 
+      });
+
+      const audioBase64: string | undefined = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       if (typeof audioBase64 === "string") {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
         const audioBuffer = await decodeAudioData(decode(audioBase64), ctx, 24000, 1);
         const mp3Blob = audioBufferToMp3(audioBuffer);
         setSummaryAudioUrl(URL.createObjectURL(mp3Blob));
+        toast.success(lang === 'ar' ? "تم التلخيص" : "Summary Generated", lang === 'ar' ? "تم توليد الشرح الصوتي بنجاح." : "Audio summary generated successfully.");
       }
-    } catch (e) { alert("فشل توليد التلخيص الصوتي."); } finally { setIsAudioSummaryLoading(false); }
+    } catch (e) { 
+      console.error("Audio summary error:", e);
+      toast.error(lang === 'ar' ? "خطأ" : "Error", lang === 'ar' ? "فشل توليد التلخيص الصوتي." : "Failed to generate audio summary."); 
+    } finally { 
+      setIsAudioSummaryLoading(false); 
+    }
   };
 
   const generateSmartVideo = async () => {
-    if (!lectureText && !imageData) return alert("يرجى رفع ملف (PDF أو صورة) أولاً ليتمكن الذكاء الاصطناعي من تحليله وتوليد الفيديو.");
+    if (!lectureText && !imageData) return toast.warning(lang === 'ar' ? "تنبيه" : "Warning", lang === 'ar' ? "يرجى رفع ملف (PDF أو صورة) أولاً ليتمكن الذكاء الاصطناعي من تحليله وتوليد الفيديو." : "Please upload a file first.");
     
-    // API Key Requirement for Veo
-    if (!await (window as any).aistudio.hasSelectedApiKey()) {
-      alert("توليد الفيديو يتطلب اختيار مفتاح API مدفوع (Paid) من Google Cloud. سيتم فتح نافذة الاختيار الآن.");
-      await (window as any).aistudio.openSelectKey();
+    const aistudio = (window as any).aistudio;
+    if (aistudio && !await aistudio.hasSelectedApiKey()) {
+      toast.info(lang === 'ar' ? "مطلوب مفتاح API" : "API Key Required", lang === 'ar' ? "توليد الفيديو يتطلب اختيار مفتاح API مدفوع (Paid). سيتم فتح نافذة الاختيار الآن." : "Video generation requires a paid API key. Opening selection window.");
+      await aistudio.openSelectKey();
       return; 
     }
-    
+
     setIsVideoLoading(true);
     setVideoStatus(lang === 'ar' ? 'جاري استيعاب محتوى ملفك...' : 'Ingesting your file...');
     
     try {
-      // Step 1: Analyze content to create a visual prompt
-      const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
-      let prompt = imageData 
+      const analysisPrompt = imageData 
         ? "Analyze this image and create a highly detailed cinematic prompt for a 5-second educational video explaining its core concept. Describe motion, lighting, and camera work. Respond only with the English prompt."
         : `Summarize the following lecture into a cinematic visual prompt for a 5-second video that explains the main concept visually. Use descriptive artistic language. 
            Content: ${lectureText.substring(0, 2000)}
            Respond only with the English prompt.`;
 
-      const analysisRes = await ai.models.generateContent({ 
-        model: 'gemini-3-flash-preview', 
-        contents: imageData 
-          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: prompt }] } 
-          : { parts: [{ text: prompt }] } 
-      });
+      const analysisRes = await callAI('gemini-3-flash-preview', imageData 
+          ? { parts: [{ inlineData: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }, { text: analysisPrompt }] } 
+          : { parts: [{ text: analysisPrompt }] } 
+      );
 
-      const visualPrompt: string = analysisRes.text || "Scientific visualization of " + (lectureText.substring(0, 50) || "lecture");
+      const visualPrompt: string = analysisRes.text || "Scientific visualization of lecture content";
       setVideoStatus(lang === 'ar' ? 'جاري تصميم المشاهد السينمائية...' : 'Designing cinematic scenes...');
 
-      // Step 2: Generate Video using Veo
-      let videoConfig: any = { 
-        model: 'veo-3.1-fast-generate-preview', 
-        prompt: visualPrompt,
-        config: { 
-          numberOfVideos: 1, 
-          resolution: '720p', 
-          aspectRatio: '16:9' 
-        } 
+      const videoConfig: any = { 
+        numberOfVideos: 1, 
+        resolution: '720p', 
+        aspectRatio: '16:9' 
       };
 
-      // If user uploaded an image, use it as the starting frame for a "real" connection
+      let imageParam: any = null;
       if (imageData) {
-        videoConfig.image = {
+        imageParam = {
           imageBytes: imageData.split(',')[1],
           mimeType: 'image/jpeg'
         };
       }
 
-      let operation = await ai.models.generateVideos(videoConfig);
+      let operation = await generateVideos('veo-3.1-fast-generate-preview', visualPrompt, videoConfig, imageParam);
 
       setVideoStatus(lang === 'ar' ? 'جاري الرندرة الحقيقية (قد يستغرق 3-5 دقائق)...' : 'Rendering real video (takes 3-5 mins)...');
 
-      // Step 3: Wait for operation
       while (!operation.done) {
         await new Promise(r => setTimeout(r, 10000));
-        operation = await ai.operations.getVideosOperation({ operation });
+        operation = await getVideosOperation(operation);
       }
 
       setVideoStatus(lang === 'ar' ? 'تجهيز ملف MP4 للتحميل...' : 'Preparing MP4 for download...');
@@ -678,12 +331,10 @@ ${src.substring(0, 20000)}`;
       }
     } catch (e: any) {
       console.error(e);
-      if (typeof e?.message === "string" && e.message.includes("entity was not found")) {
-        alert("يرجى اختيار مفتاح API مدفوع مرتبط بمشروع Google Cloud مفعل فيه الفواتير (Billing).");
-        await (window as any).aistudio.openSelectKey();
-      } else {
-        alert("فشل توليد الفيديو. تأكد من استهلاكك للـ Quota أو صلاحية المفتاح.");
-      }
+      toast.error(
+        lang === 'ar' ? "فشل توليد الفيديو" : "Video Generation Failed",
+        lang === 'ar' ? "فشل توليد الفيديو. تأكد من استهلاكك للـ Quota أو صلاحية المفتاح." : "Failed to generate video. Check your quota or API key validity."
+      );
     } finally {
       setIsVideoLoading(false);
     }
@@ -701,184 +352,100 @@ ${src.substring(0, 20000)}`;
 
   const startLiveSession = async () => {
     if (isLive) {
-      await stopLiveSession();
-      return;
+        if (sessionRef.current) {
+            sessionRef.current.then((s: any) => s.close());
+            sessionRef.current = null;
+        }
+        setIsLive(false);
+        stopAllAudio();
+        return;
     }
 
-    await ensureDigestForText();
-    if (!String(platformApiKey || '').trim()) {
-      alert(lang === 'ar'
-        ? 'مفتاح المنصة غير مضبوط. أضف VITE_GEMINI_LIVE_API_KEY أو VITE_GEMINI_API_KEY أو VITE_API_KEY.'
-        : 'Missing platform API key. Set VITE_GEMINI_LIVE_API_KEY / VITE_GEMINI_API_KEY / VITE_API_KEY.');
-      return;
-    }
-
-    const ai = new GoogleGenAI({ apiKey: String(platformApiKey).trim() });
+    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+    const ai = new GoogleGenAI({ apiKey });
     const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
     const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-    inputAudioContextRef.current = inputCtx;
     audioContextRef.current = outputCtx;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    liveStreamRef.current = stream;
 
     const sessionPromise = ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       callbacks: {
         onopen: () => {
           setIsLive(true);
-          sessionOpenRef.current = true;
           const source = inputCtx.createMediaStreamSource(stream);
           const proc = inputCtx.createScriptProcessor(4096, 1, 1);
-          liveSourceRef.current = source;
-          liveProcessorRef.current = proc;
           proc.onaudioprocess = (e) => {
-            if (!sessionOpenRef.current) return;
             const data = e.inputBuffer.getChannelData(0);
             const int16 = new Int16Array(data.length);
             for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
-            sessionPromise
-              .then((s) => {
-                if (!sessionOpenRef.current) return;
-                return s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } });
-              })
-              .catch(() => {
-                // ignore
-              });
+            sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } }));
           };
           source.connect(proc);
           proc.connect(inputCtx.destination);
-          if (imageData) {
-            sessionPromise
-              .then((s) => {
-                if (!sessionOpenRef.current) return;
-                return s.sendRealtimeInput({ media: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } });
-              })
-              .catch(() => {
-                // ignore
-              });
-          }
+          if (imageData) sessionPromise.then(s => s.sendRealtimeInput({ media: { data: imageData.split(',')[1], mimeType: 'image/jpeg' } }));
         },
         onmessage: async (msg: LiveServerMessage) => {
-          // Defensive code: see lint context (TS18048) - we use our safe helpers.
-          // Also strictly enforce type for transcript items to have a string `text`
           const modelTurnParts = msg.serverContent?.modelTurn?.parts;
           const audioData = Array.isArray(modelTurnParts) && modelTurnParts[0]?.inlineData?.data;
-          const outputCtx = audioContextRef.current;
-          if (audioData && outputCtx) {
-            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-            const buf = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
-            const s = outputCtx.createBufferSource();
-            s.buffer = buf; s.connect(outputCtx.destination); s.start(nextStartTimeRef.current);
+          const currentOutputCtx = audioContextRef.current;
+          if (audioData && currentOutputCtx) {
+            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, currentOutputCtx.currentTime);
+            const buf = await decodeAudioData(decode(audioData), currentOutputCtx, 24000, 1);
+            const s = currentOutputCtx.createBufferSource();
+            s.buffer = buf; s.connect(currentOutputCtx.destination); s.start(nextStartTimeRef.current);
             nextStartTimeRef.current += buf.duration;
             audioSourcesRef.current.add(s);
             s.onended = () => audioSourcesRef.current.delete(s);
           }
-          // Defensive: check user transcription via helper
+
           const userText = getUserTranscriptText(msg);
           if (typeof userText === "string") {
-            userBufferRef.current = (userBufferRef.current + (userBufferRef.current ? ' ' : '') + userText);
-            flushBufferLines('user');
-            maybeFlushSentence('user');
-            scheduleFlush('user');
+            setTranscript(prev => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === 'user') {
+                const updated = [...prev];
+                updated[updated.length - 1] = { ...last, text: last.text + userText };
+                return updated;
+              }
+              return [...prev, { role: 'user', text: userText }];
+            });
           }
-          // Defensive: check ai transcription via helper
+
           const aiText = getAiTranscriptText(msg);
           if (typeof aiText === "string") {
-            aiBufferRef.current = (aiBufferRef.current + (aiBufferRef.current ? ' ' : '') + aiText);
-            flushBufferLines('ai');
-            maybeFlushSentence('ai');
-            scheduleFlush('ai');
+            setTranscript(prev => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === 'ai') {
+                const updated = [...prev];
+                updated[updated.length - 1] = { ...last, text: last.text + aiText };
+                return updated;
+              }
+              return [...prev, { role: 'ai', text: aiText }];
+            });
           }
+
           if (msg.serverContent && msg.serverContent.interrupted) stopAllAudio();
         },
-        onclose: () => { stopLiveSession(); },
-        onerror: () => { stopLiveSession(); }
+        onclose: () => setIsLive(false),
+        onerror: () => setIsLive(false)
       },
       config: {
         responseModalities: [Modality.AUDIO],
         inputAudioTranscription: {}, outputAudioTranscription: {},
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-        systemInstruction: `ابدأ بالترحيب دائماً: "أهلا بك" ثم عرّف نفسك: "أنا المعلم الذكي".
-قواعد اللغة: اكتب وتحدث بالعربية الفصحى دائماً حتى لو كتب المستخدم بالإنجليزية.
-قواعد النطاق: ركّز 100% على الملف المرفوع كمصدر وحيد. اشرح المحتوى ثم أجب عن أي سؤال مرتبط بالملف فقط.
-إذا كان السؤال خارج محتوى الملف أو لا يمكن استنتاجه من المصدر، قل صراحة أنك لا تستطيع الجزم لأن المعلومة غير موجودة في الملف واطلب من المستخدم رفع جزء إضافي.
-قدّم الإجابات على شكل: شرح مختصر ثم نقاط واضحة وخلاصة.
-
-ممنوع استخدام الإنجليزية نهائياً في الإجابة.
-
-المصدر (ملف المستخدم):
-${(lectureDigest.trim() ? lectureDigest : lectureText).substring(0, 20000)}`,
-      },
-    });
-    sessionRef.current = await sessionPromise;
-  };
-
-  const chunkText = (text: string, chunkSize: number) => {
-    const t = String(text || '');
-    const out: string[] = [];
-    for (let i = 0; i < t.length; i += chunkSize) out.push(t.slice(i, i + chunkSize));
-    return out;
-  };
-
-  const buildLectureDigest = async (text: string): Promise<string> => {
-    const src = String(text || '').trim();
-    if (!src) {
-      setLectureDigest('');
-      return '';
-    }
-
-    setIsDigestLoading(true);
-    try {
-      const chunks = chunkText(src, 6000);
-      let digest = '';
-      for (let i = 0; i < chunks.length; i++) {
-        const part = chunks[i];
-        const prompt = `أنت مُلخِّص محاضرات دقيق.
-الهدف: بناء ملخص تراكمي شامل للمحاضرة كلها، بالعربية الفصحى فقط.
-
-الملخص الحالي (قد يكون فارغاً):
-${digest}
-
-الجزء الجديد رقم ${i + 1} من ${chunks.length}:
-${part}
-
-حدّث الملخص ليشمل أهم المفاهيم والتعاريف والقوانين/المعادلات والخطوات والأمثلة إن وجدت.
-مخرجاتك يجب أن تكون بالعربية فقط، وبصيغة منظمة:
-- عناوين رئيسية
-- نقاط أساسية
-- مصطلحات وتعريفات
-- أسئلة مراجعة قصيرة (5-10) في النهاية`;
-
-        const updated = await generateText(prompt, { model: 'gemini-3-flash-preview' });
-        digest = String(updated || '').trim() || digest;
-        setLectureDigest(digest);
+        systemInstruction: `أنت المعلم الذكي. اشرح بذكاء وهدوء. سياقك المرجعي المباشر: ${lectureText.substring(0, 10000)}`
       }
-
-      return digest;
-    } catch {
-      // ignore
-      return '';
-    } finally {
-      setIsDigestLoading(false);
-    }
-  };
-
-  const ensureDigestForText = async () => {
-    if (imageData) return;
-    const src = String(lectureText || '').trim();
-    if (!src) return;
-    if (lectureDigest.trim()) return;
-    if (src.length <= 20000) return;
-    await buildLectureDigest(src);
+    });
+    sessionRef.current = sessionPromise;
   };
 
   return (
-    <div className={`flex flex-col min-h-[calc(100dvh-10rem)] h-auto gap-8 animate-in fade-in duration-500 pb-6 ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
+    <div className={`flex flex-col h-[calc(100vh-10rem)] gap-8 animate-in fade-in duration-500 pb-6 font-cairo ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
       
-      {/* Help Modal */}
       {showVideoHelp && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-xl animate-in fade-in">
-           <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[3.5rem] p-10 shadow-2xl relative border border-white/10">
+           <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[3.5rem] p-10 shadow-2xl relative border border-white/10 text-right" dir="rtl">
               <button onClick={() => setShowVideoHelp(false)} className="absolute top-8 left-8 text-slate-400 hover:text-rose-500 transition-all"><X size={24} /></button>
               <h3 className="text-3xl font-black mb-6 flex items-center gap-4"><Info className="text-indigo-600" size={32} /> كيف نولد فيديو من ملفاتك؟</h3>
               
@@ -902,9 +469,7 @@ ${part}
                     <ul className="text-[11px] text-amber-700 dark:text-amber-400 space-y-2 font-bold list-disc pr-4">
                        <li>يجب استخدام مفتاح API من مشروع Google Cloud مفعل فيه نظام الدفع (Paid Tier).</li>
                        <li>النماذج المستخدمة (Veo) تستهلك Quota عالية، لذا قد يستغرق التوليد بضع دقائق.</li>
-                       <li>يمكنك متابعة حالة التوليد من شريط التقدم في واجهة الفيديو.</li>
                     </ul>
-                    <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="text-[10px] text-indigo-600 underline block mt-4">رابط تفعيل الدفع في Google Cloud</a>
                  </div>
               </div>
               <button onClick={() => setShowVideoHelp(false)} className="w-full mt-10 py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:scale-105 transition-all">جاهز للتوليد الحقيقي</button>
@@ -912,7 +477,6 @@ ${part}
         </div>
       )}
 
-      {/* Top Controls Bar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-8 rounded-[3.5rem] shadow-xl border border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-4">
            <div className="flex items-center gap-6">
@@ -920,48 +484,36 @@ ${part}
                  {fileLoading ? <Loader2 className="animate-spin" /> : fileType === 'image' ? <ImageIcon /> : <FileText />}
               </div>
               <div>
-                 <h2 className="text-2xl font-black">{lang === 'ar' ? 'المساعد المتعدد الوسائط' : 'Multi-modal Assistant'}</h2>
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{fileType ? `${lang === 'ar' ? 'المرجع النشط:' : 'Active Ref:'} ${fileType}` : (lang === 'ar' ? 'ارفع ملفاً للبدء' : 'Upload to start')}</p>
+                 <h2 className="text-2xl font-black">{lang === 'ar' ? 'المختبر التعليمي الذكي' : 'Smart Learning Lab'}</h2>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{fileType ? `${lang === 'ar' ? 'المرجع:' : 'Ref:'} ${fileType}` : (lang === 'ar' ? 'ارفع ملفاً للبدء' : 'Upload to start')}</p>
               </div>
            </div>
            <div className="flex gap-3 flex-wrap">
-              <label className="p-4 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white rounded-2xl cursor-pointer transition-all border dark:border-slate-700">
+              <label className="p-4 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white rounded-2xl cursor-pointer transition-all border dark:border-slate-700 shadow-sm">
                  <Upload size={24} /><input type="file" className="hidden" accept=".pdf,.txt,image/*" onChange={handleFileUpload} />
               </label>
-              {fileType === 'pdf' && pdfObjectUrl ? (
-                <button onClick={printPdf} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all">
-                  <Printer size={20} /> {lang === 'ar' ? 'طباعة PDF' : 'Print PDF'}
-                </button>
-              ) : null}
-              <button onClick={printUploadedFile} disabled={!fileType || (fileType === 'pdf' ? !pdfObjectUrl : fileType === 'image' ? !imageData : !lectureText)} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
-                <Printer size={20} /> {lang === 'ar' ? 'طباعة الملف' : 'Print File'}
-              </button>
-              <button onClick={printConversation} disabled={transcript.length === 0} className="px-6 py-4 bg-slate-700 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
-                <Printer size={20} /> {lang === 'ar' ? 'طباعة المحادثة' : 'Print Chat'}
-              </button>
-              <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData) || (isDigestLoading && !imageData && lectureText.length > 20000)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
+              <button onClick={generateAudioSummary} disabled={isAudioSummaryLoading || (!lectureText && !imageData)} className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all disabled:opacity-50">
                 {isAudioSummaryLoading ? <Loader2 className="animate-spin" size={20} /> : <Headphones size={20} />}
                 {lang === 'ar' ? 'بودكاست الشرح' : 'Audio Podcast'}
               </button>
               <button onClick={generateSmartVideo} className="px-6 py-4 bg-purple-600 text-white rounded-2xl font-black flex items-center gap-2 hover:shadow-lg transition-all">
-                <Video size={20} /> {lang === 'ar' ? 'توليد فيديو MP4' : 'Generate MP4'}
+                <Video size={20} /> {lang === 'ar' ? 'توليد فيديو VEO' : 'Generate VEO'}
               </button>
            </div>
         </div>
-        <button onClick={() => isLive ? stopLiveSession() : startLiveSession()} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
-           <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية للمحتوى' : 'Audio discussion')}</p></div>
+        <button onClick={startLiveSession} className={`p-8 rounded-[3.5rem] text-white shadow-xl relative overflow-hidden group transition-all ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-indigo-600'}`}>
+           <div className="relative z-10 text-right"><h3 className="text-xl font-black mb-2">{isLive ? (lang === 'ar' ? 'جلسة نشطة' : 'Live Now') : (lang === 'ar' ? 'تحدث مع الملف' : 'Talk to File')}</h3><p className="text-xs font-medium opacity-80">{isLive ? (lang === 'ar' ? 'أنا أسمعك...' : 'Listening...') : (lang === 'ar' ? 'مناقشة صوتية ذكية' : 'Smart discussion')}</p></div>
            {isLive ? <Waves className="absolute -bottom-4 -left-4 opacity-20" size={120} /> : <Mic className="absolute -bottom-4 -left-4 opacity-20" size={100} />}
         </button>
       </div>
 
-      {/* Audio Download Bar */}
       {summaryAudioUrl && (
-        <div className="bg-emerald-50 dark:bg-emerald-900/10 p-6 rounded-[2.5rem] border border-emerald-100 dark:border-emerald-800 flex items-center justify-between gap-4 animate-in slide-in-from-top-4">
+        <div className="bg-emerald-50 dark:bg-emerald-900/10 p-6 rounded-[2.5rem] border border-emerald-100 dark:border-emerald-800 flex items-center justify-between gap-4 animate-in slide-in-from-top-4 shadow-sm">
            <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-emerald-500 text-white rounded-xl flex items-center justify-center shadow-lg"><FileAudio size={24} /></div>
               <div>
-                <h4 className="font-black text-emerald-800 dark:text-emerald-200">{lang === 'ar' ? 'البودكاست التعليمي جاهز' : 'Educational Podcast Ready'}</h4>
-                <p className="text-[10px] font-bold text-emerald-600">{lang === 'ar' ? 'شرح صوتي مفصل يعتمد على ملفك' : 'Detailed audio based on your file'}</p>
+                <h4 className="font-black text-emerald-800 dark:text-emerald-200">{lang === 'ar' ? 'البودكاست التعليمي جاهز' : 'Podcast Ready'}</h4>
+                <p className="text-[10px] font-bold text-emerald-600">{lang === 'ar' ? 'شرح صوتي ممتع للملف المرفوع' : 'Audio summary based on your file'}</p>
               </div>
            </div>
            <div className="flex items-center gap-4 flex-1 max-w-xl">
@@ -971,22 +523,34 @@ ${part}
         </div>
       )}
 
-      {/* Main Workspace Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 overflow-hidden">
         
-        {/* Chat Transcript Panel */}
         <div className="lg:col-span-7 flex flex-col bg-white dark:bg-slate-900 rounded-[3.5rem] shadow-2xl border dark:border-slate-800 overflow-hidden relative">
-           <div className="flex-1 overflow-y-auto p-10 space-y-6 custom-scrollbar">
+           <div className="bg-slate-50 dark:bg-slate-800 px-8 py-4 border-b flex justify-between items-center shadow-sm">
+              <div className="flex items-center gap-3">
+                 <History size={18} className="text-indigo-600" />
+                 <h4 className="font-black text-xs uppercase tracking-widest">{lang === 'ar' ? 'سجل النقاش المباشر' : 'Live Discussion Log'}</h4>
+              </div>
+              {transcript.length > 0 && (
+                <button 
+                  onClick={exportTranscriptToPDF}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-black text-[10px] flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-md"
+                >
+                  <Printer size={14} /> {lang === 'ar' ? 'تصدير النقاش PDF' : 'Export Discussion PDF'}
+                </button>
+              )}
+           </div>
+           <div className="flex-1 overflow-y-auto p-10 space-y-6 custom-scrollbar bg-slate-50/20">
               {transcript.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center opacity-30 text-center space-y-4">
                   <Radio size={80} className="text-indigo-400 animate-pulse" />
-                  <h4 className="text-xl font-black">{lang === 'ar' ? 'المساعد بانتظار أوامرك' : 'Assistant is waiting'}</h4>
-                  <p className="text-xs max-w-xs">{lang === 'ar' ? 'ارفع ملفك ثم اختر نوع الشرح (صوتي أو مرئي) لتبدأ المعالجة الحقيقية.' : 'Upload file and choose explanation type.'}</p>
+                  <h4 className="text-xl font-black">{lang === 'ar' ? 'المساعد بانتظار أوامرك' : 'Assistant waiting'}</h4>
+                  <p className="text-xs max-w-xs">{lang === 'ar' ? 'ارفع ملفك ثم ابدأ الحوار الصوتي أو ولد شرحاً مرئياً.' : 'Upload file and start discussion or video.'}</p>
                 </div>
               )}
               {transcript.map((m, i) => (
                 <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2`}>
-                   <div className={`max-w-[85%] p-6 rounded-[2.5rem] text-sm font-bold leading-relaxed shadow-sm ${m.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-slate-50 dark:bg-slate-800 dark:text-white rounded-bl-none border border-indigo-50/20'}`}>
+                   <div className={`max-w-[85%] p-6 rounded-[2.5rem] text-sm font-bold leading-relaxed shadow-sm ${m.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white dark:bg-slate-800 dark:text-white rounded-bl-none border border-indigo-50/20'}`}>
                      {m.text}
                    </div>
                 </div>
@@ -994,9 +558,8 @@ ${part}
            </div>
         </div>
 
-        {/* Video Visualizer Panel */}
         <div className="lg:col-span-5 flex flex-col gap-6 overflow-hidden">
-           <div className="flex-1 bg-slate-950 rounded-[3.5rem] p-8 flex flex-col items-center justify-center relative overflow-hidden group border-4 border-indigo-600/20 shadow-2xl shadow-indigo-500/10">
+           <div className="flex-1 bg-slate-950 rounded-[3.5rem] p-8 flex flex-col items-center justify-center relative overflow-hidden group border-4 border-indigo-600/20 shadow-2xl">
               <button onClick={() => setShowVideoHelp(true)} className="absolute top-8 left-8 p-3 bg-white/10 hover:bg-white/20 text-white rounded-2xl backdrop-blur-md z-20 transition-all"><Info size={20} /></button>
               
               {videoUrl && (
@@ -1005,19 +568,19 @@ ${part}
                   className="absolute bottom-8 right-8 p-4 bg-emerald-600 text-white rounded-2xl shadow-2xl hover:scale-110 transition-all z-30 flex items-center gap-2 animate-in zoom-in"
                 >
                   <Download size={20} />
-                  <span className="font-black text-xs">{lang === 'ar' ? 'تحميل فيديو MP4' : 'Download MP4'}</span>
+                  <span className="font-black text-xs">{lang === 'ar' ? 'تحميل MP4' : 'Download MP4'}</span>
                 </button>
               )}
 
               {isVideoLoading ? (
                 <div className="text-center space-y-8 z-10 w-full px-10">
                    <div className="relative">
-                      <div className="w-28 h-28 border-8 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mx-auto shadow-2xl shadow-indigo-500/30"></div>
+                      <div className="w-28 h-28 border-8 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mx-auto shadow-2xl"></div>
                       <Film className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-400 animate-pulse" size={32} />
                    </div>
                    <div className="space-y-4">
                       <p className="text-white font-black text-xl animate-pulse">{videoStatus}</p>
-                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden p-0.5">
+                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden p-0.5 shadow-inner">
                          <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-[loading-bar_10s_ease-in-out_infinite] rounded-full"></div>
                       </div>
                       <div className="flex justify-center gap-4 text-slate-500 text-[9px] font-black uppercase tracking-[0.2em]">
@@ -1027,30 +590,29 @@ ${part}
                    </div>
                 </div>
               ) : videoUrl ? (
-                <video src={videoUrl} controls autoPlay loop className="w-full h-full object-cover rounded-[2rem] shadow-2xl" />
+                <video src={videoUrl} controls autoPlay loop className="w-full h-full object-cover rounded-[2rem] shadow-2xl border-4 border-white/5" />
               ) : imageData ? (
-                <img src={imageData} className="w-full h-full object-contain rounded-[2rem] opacity-60" alt="Preview" />
+                <img src={imageData} className="w-full h-full object-contain rounded-[2.5rem] opacity-60" alt="Preview" />
               ) : (
-                <div className="text-center space-y-6 opacity-30">
-                   <div className="w-24 h-24 bg-indigo-500/20 rounded-[2rem] flex items-center justify-center mx-auto">
+                <div className="text-center space-y-6 opacity-30 group-hover:opacity-50 transition-opacity">
+                   <div className="w-24 h-24 bg-indigo-500/20 rounded-[2rem] flex items-center justify-center mx-auto shadow-inner">
                       <Monitor size={60} className="text-indigo-400" />
                    </div>
                    <div className="space-y-2">
-                     <h4 className="text-white text-xl font-black">{lang === 'ar' ? 'مرسم المحاضرات (MP4)' : 'Lecture Visualizer (MP4)'}</h4>
-                     <p className="text-indigo-400 text-[10px] font-bold uppercase tracking-widest">{lang === 'ar' ? 'حوّل ملفاتك لمقاطع تعليمية واقعية' : 'Turn files into real clips'}</p>
+                     <h4 className="text-white text-xl font-black">{lang === 'ar' ? 'العرض السينمائي التعليمي' : 'Cinema Visualizer'}</h4>
+                     <p className="text-indigo-400 text-[10px] font-bold uppercase tracking-widest">{lang === 'ar' ? 'حوّل محتواك لمقاطع واقعية مذهلة' : 'Realistic cinematic clips'}</p>
                    </div>
                 </div>
               )}
            </div>
 
-           {/* Content Context Panel */}
            <div className="bg-white dark:bg-slate-900 p-8 rounded-[3.5rem] shadow-xl border dark:border-slate-800">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{lang === 'ar' ? 'محتوى المصدر' : 'Source Content'}</h4>
-                {lectureText && <span className="text-[10px] font-black text-emerald-500">{lectureText.length} حرف تم استخراجها</span>}
+                {lectureText && <span className="text-[10px] font-black text-emerald-500">{lectureText.length} حرف</span>}
               </div>
               <div className="w-full h-32 p-5 bg-slate-50 dark:bg-slate-800 rounded-2xl text-[11px] font-bold overflow-y-auto custom-scrollbar leading-relaxed">
-                {lectureText || (lang === 'ar' ? "في انتظار رفع ملف PDF أو كتابة نص..." : "Waiting for file ingest...")}
+                {lectureText || (lang === 'ar' ? "في انتظار رفع ملف PDF أو صورة للبدء..." : "Waiting for file ingest...")}
               </div>
            </div>
         </div>
